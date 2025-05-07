@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Mar 16 16:09:53 2025
+
+@author: nadya
+"""
+
+from intelligent_vehicles.trackers.AB3DMOT.model import AB3DMOT
+
+class AB3DMOTWrapper:
+    
+    def __init__(self):
+        self.tracker = AB3DMOT()
+        
+    def track(self, detections, ego_pose):
+        # Convert a dict-based detection to array format: [h, w, l, x, y, z, ry, score]
+        
+        dets = []
+        
+        for d in detections:
+            h = d['height']
+            w = d['width']
+            l = d['length']
+            x, y, z = d['position']
+            ry = d['yaw']
+            s = d['score']
+            category = d['label']
+    
+            detection = [h, w, l, x, y, z, ry, s, category]
+            dets.append(detection)
+            
+        self.tracker.track(dets, ego_pose)
