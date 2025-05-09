@@ -33,6 +33,7 @@ class TrajDataloader:
     def extract_all_scenarios(self):
         with open(self.data_file, 'rb') as f:
             data = pickle.load(f)
+            print(f"data loaded")
             return data.keys()
         
     def preload_data(self, scenario_name):
@@ -48,7 +49,7 @@ class TrajDataloader:
         
         with open(self.data_file, 'rb') as f:
             dataset = pickle.load(f)
-    
+
         # Extract scenario data: expected format is { scenario_name: { timestamp: frame_data, ... } }
         scenario_data = dataset.get(scenario_name, {})
         if not scenario_data:

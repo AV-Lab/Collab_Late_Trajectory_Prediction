@@ -6,7 +6,7 @@ Created on Sun Mar 16 16:09:53 2025
 @author: nadya
 """
 
-from intelligent_vehicles.trackers.AB3DMOT.model import AB3DMOT
+from intelligent_vehicles.trackers.ab3dmot.model import AB3DMOT
 
 class AB3DMOTWrapper:
     

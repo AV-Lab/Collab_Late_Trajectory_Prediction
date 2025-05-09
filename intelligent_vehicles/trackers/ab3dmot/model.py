@@ -2,9 +2,9 @@
 # email: xinshuo.weng@gmail.com
 
 import numpy as np, os, copy, math
-from intelligent_vehicles.trackers.AB3DMOT.box import Box3D
-from intelligent_vehicles.trackers.AB3DMOT.matching import data_association
-from intelligent_vehicles.trackers.AB3DMOT.kalman_filter import KF
+from intelligent_vehicles.trackers.ab3dmot.box import Box3D
+from intelligent_vehicles.trackers.ab3dmot.matching import data_association
+from intelligent_vehicles.trackers.ab3dmot.kalman_filter import KF
 
 np.set_printoptions(suppress=True, precision=3)
 

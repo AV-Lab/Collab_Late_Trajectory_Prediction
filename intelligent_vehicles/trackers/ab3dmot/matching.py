@@ -1,7 +1,7 @@
 import numpy as np
 from numba import jit
 from scipy.optimize import linear_sum_assignment
-from intelligent_vehicles.trackers.AB3DMOT.dist_metrics import iou, dist3d, dist_ground, m_distance
+from intelligent_vehicles.trackers.ab3dmot.dist_metrics import iou, dist3d, dist_ground, m_distance
 
 def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 	# compute affinity matrix

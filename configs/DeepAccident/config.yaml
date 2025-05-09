@@ -1,8 +1,8 @@
 dataset:
   name: "DeepAccident"
-  path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/DeepAccident"
+  path: "data/DeepAccident"
   prefixes:
-    - "train"
+    # - "train"
     - "valid"
 
 ego_vehicle:
@@ -56,7 +56,7 @@ vehicles:
 
     predictor:
       name: "gat_temporal"
-      mode: "train"
+      mode: "eval"
       checkpoint: "/path/to/gat_temporal_train.ckpt"
 
     broadcaster:
@@ -106,7 +106,7 @@ vehicles:
 
     detector:
       name: "gt"
-      mode: "train"
+      mode: "eval"
       checkpoint: "/path/to/centerpoint_train.ckpt"
 
     tracker:
@@ -114,7 +114,7 @@ vehicles:
 
     predictor:
       name: "transformer_gnn"
-      mode: "train"
+      mode: "eval"
       checkpoint: "/path/to/transformer_gnn_train.ckpt"
 
     broadcaster:

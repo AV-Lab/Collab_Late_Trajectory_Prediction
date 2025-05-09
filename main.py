@@ -67,13 +67,13 @@ if __name__ == '__main__':
     ego_vehicle, vehicles = initialize_vehicles(configuration['data'], configuration["ego_vehicle"], configuration["vehicles"])
     
     scenarios = ego_vehicle.test_loader.extract_all_scenarios()
-    
+    print(f"scenarios ready")
     # global clock 
     simulation_time = 10.0  # total sim time in seconds
     dt = 0.01               # step in seconds
 
     visualizer = BBoxVisualizer()
-        
+     
     for scenario in scenarios:
         # first preload all data for scenario
         ego_vehicle.test_loader.preload_data(scenario)

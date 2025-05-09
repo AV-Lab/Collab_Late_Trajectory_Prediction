@@ -1,7 +1,7 @@
 import numpy as np, time
 from numba import jit
 from scipy.spatial import ConvexHull
-from intelligent_vehicles.trackers.AB3DMOT.box import Box3D
+from intelligent_vehicles.trackers.ab3dmot.box import Box3D
 
 def polygon_clip(subjectPolygon, clipPolygon):
 	""" Clip a polygon with another polygon.
