@@ -72,7 +72,7 @@ if __name__ == '__main__':
     simulation_time = 10.0  # total sim time in seconds
     dt = 0.01               # step in seconds
 
-    visualizer = BBoxVisualizer()
+    # visualizer = BBoxVisualizer()
      
     for scenario in scenarios:
         # first preload all data for scenario
@@ -88,7 +88,9 @@ if __name__ == '__main__':
             response = ego_vehicle.run(t_global)
             if response is not None:
                 detections, point_cloud, ego_pose = response
-                visualizer.visualize(point_cloud, detections, ego_pose)
+
+                print(f"ego vehicle detections {detections} at ego_pose {ego_pose}")
+                # visualizer.visualize(point_cloud, detections, ego_pose)
                 time.sleep(0.1)
             #for iv in vehicles:
             #    iv.run(t_global)

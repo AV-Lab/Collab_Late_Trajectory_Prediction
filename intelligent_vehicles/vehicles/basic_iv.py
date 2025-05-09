@@ -39,6 +39,7 @@ class BasicIntelligentVehicle:
             self.detector = initialize_detector(detector_config)
 
     def _init_tracker(self, tracker_config):
+        print(f"Initializing tracker with config: {tracker_config}")
         self.tracker = initialize_tracker(tracker_config)
 
     def _init_predictor(self, predictor_config, data, prediction_horizon, prediction_frequency, forecasting_frequency):
@@ -114,9 +115,11 @@ class BasicIntelligentVehicle:
             # if we recived observation we run detection
             ego_state = frame_data["ego_state"]
             bboxs = self.run_detector(frame_data)
+
+           
             
             # Update the tracker
-            #tracklets = self.run_tracker(bboxs, ego_state)
+            tracklets = self.run_tracker(bboxs, ego_state)
             
             # Check if it's time for prediction
             # ask tracker for active tracklets and run predict

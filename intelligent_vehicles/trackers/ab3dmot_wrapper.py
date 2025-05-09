@@ -12,6 +12,7 @@ class AB3DMOTWrapper:
     
     def __init__(self):
         self.tracker = AB3DMOT()
+        self.tracker.reset()
         
     def track(self, detections, ego_pose):
         # Convert a dict-based detection to array format: [h, w, l, x, y, z, ry, score]

@@ -1,6 +1,12 @@
 import numpy as np
 from filterpy.kalman import KalmanFilter, UnscentedKalmanFilter, MerweScaledSigmaPoints
 
+
+#confidence estimation algorithm 
+
+
+
+
 class Filter(object):
 	def __init__(self, bbox3D, label, ID, confidence):
 		self.time_since_update = 0
@@ -11,8 +17,8 @@ class Filter(object):
 		self.initial_pos = bbox3D
 
 class KF(Filter):
-	def __init__(self, bbox3D, info, ID):
-		super().__init__(bbox3D, info, ID)
+	def __init__(self, bbox3D,  ID,score,label):
+		super().__init__(bbox3D, label, ID,score)
 
 		self.kf = KalmanFilter(dim_x=10, dim_z=7)       
 		# There is no need to use EKF here as the measurement and state are in the same space with linear relationship

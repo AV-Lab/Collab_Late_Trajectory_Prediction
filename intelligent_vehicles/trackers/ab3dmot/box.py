@@ -3,7 +3,7 @@ from numba import jit
 from copy import deepcopy
 
 class Box3D:
-    def __init__(self, x=None, y=None, z=None, h=None, w=None, l=None, ry=None, s=None):
+    def __init__(self, x=None, y=None, z=None, h=None, w=None, l=None, ry=None, s=None,obj_class=None):
         self.x = x      # center x
         self.y = y      # center y
         self.z = z      # center z
@@ -12,6 +12,7 @@ class Box3D:
         self.l = l      # length
         self.ry = ry    # orientation
         self.s = s      # detection score
+        self.obj_class = None  # object class 
         self.corners_3d_cam = None
 
     def __str__(self):
@@ -26,17 +27,17 @@ class Box3D:
     
     @classmethod
     def bbox2array(cls, bbox):
-        if bbox.s is None:
-            return np.array([bbox.x, bbox.y, bbox.z, bbox.ry, bbox.l, bbox.w, bbox.h])
-        else:
-            return np.array([bbox.x, bbox.y, bbox.z, bbox.ry, bbox.l, bbox.w, bbox.h, bbox.s])
+        # if bbox.s is None:
+        return np.array([bbox.x, bbox.y, bbox.z, bbox.ry, bbox.l, bbox.w, bbox.h])
+        # else:
+        #     return np.array([bbox.x, bbox.y, bbox.z, bbox.ry, bbox.l, bbox.w, bbox.h])
 
     @classmethod
     def bbox2array_raw(cls, bbox):
         if bbox.s is None:
             return np.array([bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry])
         else:
-            return np.array([bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry, bbox.s])
+            return np.array([bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry, bbox.s,bbox.obj_class])
 
     @classmethod
     def array2bbox_raw(cls, data):
@@ -45,7 +46,11 @@ class Box3D:
         bbox = Box3D()
         bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry = data[:7]
         if len(data) == 8:
-            bbox.s = data[-1]
+            bbox.s = data[7]
+
+        if len(data) == 9:
+            bbox.s = data[7]
+            bbox.obj_class = data[-1]
         return bbox
     
     @classmethod
@@ -56,6 +61,11 @@ class Box3D:
         bbox.x, bbox.y, bbox.z, bbox.ry, bbox.l, bbox.w, bbox.h = data[:7]
         if len(data) == 8:
             bbox.s = data[-1]
+        
+        if len(data) == 9:
+            bbox.s = data[7]
+            bbox.obj_class = data[-1]
+            
         return bbox
     
     def roty(self, t):

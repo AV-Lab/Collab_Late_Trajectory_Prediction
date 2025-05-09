@@ -12,8 +12,8 @@ np.set_printoptions(suppress=True, precision=3)
 class AB3DMOT(object):			  	
     def __init__(self):                    
 
-        # counter
-        self.trackers = []
+
+   
         self.frame_count = 0
         self.ID_count = [0]
         self.id_now_output = []
@@ -48,12 +48,12 @@ class AB3DMOT(object):
     def process_detections(self, dets):
 		# convert each detection into the class Box3D 
 		# inputs: 
-		# 	dets - a numpy array of detections in the format [[h,w,l,x,y,z,theta],...]
-        
+		# 	dets - a numpy array of detections in the format [[h,w,l,x,y,z,theta],...]  
         dets_new = []
         for det in dets:
             det_tmp = Box3D.array2bbox_raw(det)
             dets_new.append(det_tmp)
+            
         return dets_new
     
     def within_range(self, theta):
@@ -132,9 +132,13 @@ class AB3DMOT(object):
 		# create and initialise new trackers for unmatched detections
 
 		# dets = copy.copy(dets)
+      
         new_id_list = list()					# new ID generated for unmatched detections
-        for i in unmatched_dets:        			# a scalar of index
-            trk = KF(Box3D.bbox2array(dets[i]), self.ID_count[0])
+        for i in unmatched_dets: 
+            # a scalar of index
+            label = dets[i].obj_class
+            score = dets[i].s
+            trk = KF(Box3D.bbox2array(dets[i]),self.ID_count[0],score,label)
             self.trackers.append(trk)
             new_id_list.append(trk.id)
 			# print('track ID %s has been initialized due to new detection' % trk.id)
@@ -220,9 +224,9 @@ class AB3DMOT(object):
             permute_col.append(index)
 
 		# expand the affinity matrix with newly added columns
-        append = np.zeros((affi.shape[0], max_index - affi.shape[1]))
-        append.fill(self.min_sim)
-        affi = np.concatenate([affi, append], axis=1)
+        appended = np.zeros((affi.shape[0], max_index - affi.shape[1]))
+        appended.fill(self.min_sim)
+        affi = np.concatenate([affi, appended], axis=1)
 
 		# find out the correct permutation for the newly added columns of ID
         for count in range(len(to_fill_col)):
