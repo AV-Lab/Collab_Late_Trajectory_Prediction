@@ -157,7 +157,8 @@ class TrajDataloader:
         else:
             t_frame = self.timestamps[self.current_frame]
             self.current_frame += 1
-            print(t, t_frame)
+            # print(f"timestamp : {t} timestamp_frame: {t_frame}")
+            print(f"--------- timestamp : {t_frame}")
             return self.loaded_frames[t_frame]
 
     def __iter__(self):

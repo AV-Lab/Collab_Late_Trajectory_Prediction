@@ -89,7 +89,7 @@ if __name__ == '__main__':
             if response is not None:
                 detections, point_cloud, ego_pose = response
 
-                print(f"ego vehicle detections {detections} at ego_pose {ego_pose}")
+                # print(f"ego vehicle detections {detections} at ego_pose {ego_pose}")
                 # visualizer.visualize(point_cloud, detections, ego_pose)
                 time.sleep(0.1)
             #for iv in vehicles:

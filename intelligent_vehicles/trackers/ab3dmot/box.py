@@ -68,7 +68,9 @@ class Box3D:
             
         return bbox
     
-    def roty(self, t):
+
+    @staticmethod
+    def roty(t):
         """
         Create a 3x3 rotation matrix for rotation about the Y-axis (yaw)
         
@@ -110,6 +112,8 @@ class Box3D:
             x -> w, z -> l, y -> h
         '''
 
+        # print(f"box2corners3d_camcoord cls :{cls}\n bbox: {bbox}")
+        # print(f"box2corners3d_camcoord bbox.ry: {bbox.ry}")
         # if already computed before, then skip it
         if bbox.corners_3d_cam is not None:
             return bbox.corners_3d_cam
@@ -135,3 +139,5 @@ class Box3D:
         bbox.corners_3d_cam = corners_3d
 
         return corners_3d
+    
+    

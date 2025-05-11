@@ -1,6 +1,7 @@
 import numpy as np
 from numba import jit
 from scipy.optimize import linear_sum_assignment
+from intelligent_vehicles.trackers.ab3dmot.box import Box3D
 from intelligent_vehicles.trackers.ab3dmot.dist_metrics import iou, dist3d, dist_ground, m_distance
 
 def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
@@ -10,11 +11,25 @@ def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 	for d, det in enumerate(dets):
 		for t, trk in enumerate(trks):
 
+			# get bbox of tracklet from kalman filter
+			kf_tmp = trk.kf	
+			det_trk = Box3D.array2bbox(kf_tmp.x.reshape((-1))[:7])
+
+			# # bbox from detector
+			# bbox_det = Box3D.array2bbox(det[:7])
+			
+			# Check if classes match (if class attributes are found)
+			det_class = det.obj_class # det.obj_class
+			trk_class = trk.category # trk.obj_class
+			if det_class != trk_class:
+					aff_matrix[d, t] = -float('inf')  # Very low affinity for mismatched classes
+					continue
+
 			# choose to use different distance metrics
-			if 'iou' in metric:    	  dist_now = iou(det, trk, metric)            
-			elif metric == 'm_dis':   dist_now = -m_distance(det, trk, trk_inv_inn_matrices[t])
-			elif metric == 'euler':   dist_now = -m_distance(det, trk, None)
-			elif metric == 'dist_2d': dist_now = -dist_ground(det, trk)              	
+			if 'iou' in metric:    	  dist_now = iou(det, det_trk, metric)            
+			elif metric == 'm_dis':   dist_now = -m_distance(det, det_trk, trk_inv_inn_matrices[t])
+			elif metric == 'euler':   dist_now = -m_distance(det, det_trk, None)
+			elif metric == 'dist_2d': dist_now = -dist_ground(det, det_trk)              	
 			elif metric == 'dist_3d': dist_now = -dist3d(det, trk)              				
 			else: assert False, 'error'
 			aff_matrix[d, t] = dist_now
@@ -48,7 +63,7 @@ def greedy_matching(cost_matrix):
 
     return np.asarray(matched_indices)
 
-def data_association(dets, trks, params, algm, metric, trk_innovation_matrix=None, hypothesis=1):   
+def data_association(dets, trks, params, algm, metric, trk_innovation_matrix=None, hypothesis=1,threshold = -1000):   
 	"""
 	Assigns detections to tracked object
 
@@ -91,13 +106,18 @@ def data_association(dets, trks, params, algm, metric, trk_innovation_matrix=Non
 
 	# filter out matches with low affinity
 	matches = []
+	# print(f"matched_indices {matched_indices}")
 	for m in matched_indices:
-		if (aff_matrix[m[0], m[1]] < threshold):
+		det_class = dets[m[0]].obj_class
+		thres = params[det_class]['thres']
+		if (aff_matrix[m[0], m[1]] < thres):
 			unmatched_dets.append(m[0])
 			unmatched_trks.append(m[1])
 		else: matches.append(m.reshape(1, 2))
 	if len(matches) == 0: 
 		matches = np.empty((0, 2),dtype=int)
 	else: matches = np.concatenate(matches, axis=0)
+
+	# print(f"matches {matches}")
 
 	return matches, np.array(unmatched_dets), np.array(unmatched_trks), cost, aff_matrix

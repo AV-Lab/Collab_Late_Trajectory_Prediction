@@ -32,3 +32,7 @@ class AB3DMOTWrapper:
             dets.append(detection)
             
         self.tracker.track(dets, ego_pose)
+    
+    def get_tracked_objects(self):
+        # Get the tracked objects from the tracker
+        return self.tracker.get_active_tracklets()

@@ -63,7 +63,9 @@ class BasicIntelligentVehicle:
 
     def run_tracker(self, detections, ego_pose):
         self.tracker.track(detections, ego_pose)
-        tracklets = self.tracker.get_active_tracklets()
+        tracklets = self.tracker.get_tracked_objects()
+
+
         return tracklets
     
     def run_predictor(self, tracklets):
@@ -117,9 +119,11 @@ class BasicIntelligentVehicle:
             bboxs = self.run_detector(frame_data)
 
            
-            
-            # Update the tracker
+            # Update the tracker -> tracklets is numpy str array of 3D boxes [x, y, z, theta, l, w, h,s, obj_class]
             tracklets = self.run_tracker(bboxs, ego_state)
+
+
+            # print(f"tracklets {tracklets}")
             
             # Check if it's time for prediction
             # ask tracker for active tracklets and run predict
