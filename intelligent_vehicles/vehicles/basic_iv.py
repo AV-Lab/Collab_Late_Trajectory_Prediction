@@ -7,6 +7,7 @@ Created on Mon Jul  8 14:11:22 2024
 """
 
 import torch
+import os
 import numpy as np
 import logging
 logger = logging.getLogger(__name__)
@@ -54,7 +55,8 @@ class BasicIntelligentVehicle:
                       'height': s['height'], 
                       'length': s['length'], 
                       'position': (s['x'], s['y'], s['z']), 
-                      'yaw': s['yaw']} for s in frame_data["labels"]]
+                      'yaw': s['yaw'],
+                      'obj_id' : s['obj_id']} for s in frame_data["labels"]]
             return bboxs     
         else:
             logger.info(f"Run detector on current frame data.")
@@ -88,6 +90,7 @@ class BasicIntelligentVehicle:
         self.prediction_horizon = parameters["prediction_horizon"]
         self.prediction_frequency = parameters["prediction_frequency"]
         self.forecasting_frequency = parameters["forecasting_frequency"]
+        self.results_folder = "results"
         
         if "train" in data:
             self.train_loader = self._init_dataloader(data["train"], sensors, self.fps)
@@ -103,13 +106,47 @@ class BasicIntelligentVehicle:
                              self.prediction_horizon,
                              self.prediction_frequency,
                              self.forecasting_frequency)
-    
-    
-    def run(self, t):
+    def save_results(self, frame_id, gt, tracklets):
+        """
+        Save tracklets and ground truth to files for evaluation
+        
+        Args:
+            frame_id: Current frame ID
+            gt: List of ground truth objects
+            tracklets: List of tracker results (tracklets)
+        
+        This function will overwrite files if frame_id=0, otherwise append to existing files
+        """
+        os.makedirs(self.results_folder, exist_ok=True)
+
+        # Save GT
+        gt_file = os.path.join(self.results_folder, f"{self.name}_gt.txt")
+        
+        # Determine if we should write or append
+        mode = 'w' if frame_id == 1 else 'a'
+        
+        with open(gt_file, mode) as f:
+            for g in gt:
+                f.write(f"{frame_id} {g['obj_id']} {g['label']} {g['position'][0]} {g['position'][1]} {g['position'][2]} "
+                        f"{g['yaw']} {g['length']} {g['width']} {g['height']} {g['score']}\n")
+        
+        # Save tracklets
+        tracklets_file = os.path.join(self.results_folder, f"{self.name}_tracklets.txt")
+        
+        with open(tracklets_file, mode) as f:
+            for t in tracklets:
+                bbox3D = t.get_3dbbox()  # [bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry, bbox.s, bbox.obj_class]
+                # frame_id, id, category, x, y, z, ry, l, w, h, confidence
+                f.write(f"{frame_id} {t.id} {t.category} {bbox3D[3]} {bbox3D[4]} {bbox3D[5]} {bbox3D[6]} "
+                        f"{bbox3D[2]} {bbox3D[1]} {bbox3D[0]} {t.confidence}\n")
+        # logger.info(f"Results saved for frame {frame_id} in {self.results_folder}.")
+                
+    def run(self, t,save_results=True):
+        # print(f"----------Running vehicle {self.name} at time {t}==========")
         # Check if it's time for observation
         if abs(t - self.next_observation_time) <= self.delta:
             self.next_observation_time += 1.0 / self.fps
-            frame_data = self.test_loader.get_frame_data(t)
+            frame_data,frame_id = self.test_loader.get_frame_data(t)
             if frame_data == None:
                 logger.info(f"Vehicle {self.name} left the scene.")
                 self.next_observation_time = self.starting_time
@@ -119,21 +156,25 @@ class BasicIntelligentVehicle:
             bboxs = self.run_detector(frame_data)
 
            
-            # Update the tracker -> tracklets is numpy str array of 3D boxes [x, y, z, theta, l, w, h,s, obj_class]
+            # Update the tracker -> tracklets is numpy str array of 3D boxes [bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry,bbox.s,bbox.obj_class]
             tracklets = self.run_tracker(bboxs, ego_state)
+           
+
+            if save_results:
+                self.save_results(frame_id, bboxs,tracklets)
 
 
-            # print(f"tracklets {tracklets}")
+           
             
             # Check if it's time for prediction
             # ask tracker for active tracklets and run predict
             #if (t - self.last_prediction_time) >= (1.0 / self.prediction_frequency):            
             #    predictions = self.run_predictor(tracklets)
             #    self.last_prediction_time = t
-            
+           
             return (bboxs, frame_data["lidar"], ego_state)
         
         
-        
+  
 
             

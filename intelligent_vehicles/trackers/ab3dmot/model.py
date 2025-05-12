@@ -13,8 +13,6 @@ np.set_printoptions(suppress=True, precision=3)
 # A Baseline of 3D Multi-Object Tracking
 class AB3DMOT(object):			  	
     def __init__(self):                    
-
-
    
         self.frame_count = 0
         self.ID_count = [0]
@@ -28,18 +26,18 @@ class AB3DMOT(object):
         # self.debug_id = 2
         self.debug_id = None
         self.algm = 'greedy' #hungar
-        self.metric = 'giou_3d'
+        self.metric = 'iou_3d'
 
         # tracker parameters per category
         self.params = {
-            'car':         {'thres': -0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': -1.0},
-            'pedestrian':  {'thres': -0.5, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': -1.0},
-            'cyclist':     {'thres':  -0.6, 'min_hits': 3, 'max_age': 4, 'max_sim': 0.0, 'min_sim': -100.},
-            'bus':         {'thres': -0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': -1.0},
-            'van':         {'thres': -0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': -1.0},
-            'truck':       {'thres': -0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': -1.0},
-            'motorcycle':  {'thres': -0.7, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': -1.0},
-            'default':     {'thres': -0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': -1.0}
+            'car':         {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'pedestrian':  {'thres': 0.5, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+            'cyclist':     {'thres': 0.6, 'min_hits': 3, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+            'bus':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'van':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'truck':       {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'motorcycle':  {'thres': 0.7, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'default':     {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
         }
         
     def reset(self):
@@ -123,7 +121,7 @@ class AB3DMOT(object):
                 trk.hits += 1
 
                 det_trk = Box3D.array2bbox(trk.kf.x.reshape((-1))[:7])
-                calculated_iou = iou(det_trk, dets[d[0]])
+                calculated_iou = iou(det_trk, dets[d[0]],self.metric)
                 det_score = dets[d[0]].s
                
 
@@ -132,6 +130,8 @@ class AB3DMOT(object):
                 trk.kf.x[3], bbox3d[3] = self.orientation_correction(trk.kf.x[3], bbox3d[3])
                 trk.kf.update(bbox3d)
                 trk.kf.x[3] = self.within_range(trk.kf.x[3])
+
+               
                 
 
                # Update confidence using determinant of covariance as uncertainty measure
@@ -146,7 +146,7 @@ class AB3DMOT(object):
 
 		# dets = copy.copy(dets)
       
-        new_id_list = list()					# new ID generated for unmatched detections
+        new_id_list = list()		# new ID generated for unmatched detections
         for i in unmatched_dets: 
             # a scalar of index
             label = dets[i].obj_class
@@ -160,28 +160,46 @@ class AB3DMOT(object):
 
         return new_id_list
 
-    def get_active_tracklets(self): #done
-		# output exiting tracks that have been stably associated, i.e., >= min_hits
-		# and also delete tracks that have appeared for a long time, i.e., >= max_age
-
+    def get_active_tracklets(self, return_trks=True):
+        """
+        Gets active tracklets based on tracking parameters.
+        
+        This function:
+        1. Returns existing tracks that have been stably associated (hits >= min_hits)
+        2. Removes tracks that have not been updated for too long (time_since_update >= max_age)
+        
+        Args:
+            return_trks (bool): If True, returns tracklet objects; otherwise returns 3D bounding boxes
+            
+        Returns:
+            Results can be either:
+            - List of tracklet objects (if return_trks=True)
+            - Numpy array of 3D bounding boxes (if return_trks=False)
+        """
         num_trks = len(self.trackers)
         results = []
+        
         for trk in reversed(self.trackers):
-			# change format from [x,y,z,theta,l,w,h] to [h,w,l,x,y,z,theta]
-            d = Box3D.array2bbox(trk.kf.x[:7].reshape((7, )))     # bbox location self
+            # Convert from [x,y,z,theta,l,w,h] to [h,w,l,x,y,z,theta]
+            d = Box3D.array2bbox(trk.kf.x[:7].reshape((7, )))     # bbox location from Kalman filter
             d = Box3D.bbox2array_raw(d)
             obj_class = trk.category
 
-            if ((trk.time_since_update < self.params[obj_class]['max_age']) and (trk.hits >= self.params[obj_class]['min_hits'] or self.frame_count <= self.params[obj_class]['min_hits'])):      
-                # results.append(np.concatenate((d, [trk.id], trk.category)).reshape(1, -1)) 	
-                # Returns 3dbbox with confidence and class
-                results.append(trk.get_3dbbox())	
+            # Check if tracklet is active (recently updated and has enough hits)
+            if ((trk.time_since_update < self.params[obj_class]['max_age']) and 
+                (trk.hits >= self.params[obj_class]['min_hits'] or self.frame_count <= self.params[obj_class]['min_hits'])):      
+                
+                # Append either the tracklet or its 3D bbox based on return_trks
+                results.append(trk) if return_trks else results.append(trk.get_3dbbox())  # Returns 3dbbox with confidence and class
+                        
             num_trks -= 1
 
-			# deadth, remove dead tracklet
+            # Remove dead tracklet that hasn't been updated for too long
             if (trk.time_since_update >= self.params[obj_class]['max_age']): 
                 self.trackers.pop(num_trks)
-        results = np.array(results)
+        
+        # Convert to numpy array if returning bounding boxes, otherwise keep as list of tracklets
+        results = np.array(results) if not return_trks else results
 
         return results
 

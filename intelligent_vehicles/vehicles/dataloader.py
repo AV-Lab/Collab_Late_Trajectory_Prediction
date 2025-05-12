@@ -159,7 +159,7 @@ class TrajDataloader:
             self.current_frame += 1
             # print(f"timestamp : {t} timestamp_frame: {t_frame}")
             print(f"--------- timestamp : {t_frame}")
-            return self.loaded_frames[t_frame]
+            return self.loaded_frames[t_frame],self.current_frame 
 
     def __iter__(self):
         pass
