@@ -23,6 +23,7 @@ def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 
 			# Check if classes match (if class attributes are found)
 			det_class = det.obj_class # det.obj_class
+			
 
 			if det_class != trk_class:
 					aff_matrix[d, t] = -float('inf')  # Very low affinity for mismatched classes
@@ -36,6 +37,7 @@ def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 			elif metric == 'dist_3d': dist_now = -dist3d(det, trk)              				
 			else: assert False, 'error'
 			aff_matrix[d, t] = dist_now
+			print(f"det_class {det_class} trk_class {trk_class} aff_matrix[{d}, {t}] = {aff_matrix[d, t] , iou(det, det_trk, metric) }")
 
 	return aff_matrix
 
@@ -85,6 +87,8 @@ def data_association(dets, trks, params, algm, metric, trk_innovation_matrix=Non
 
 	# compute affinity matrix
 	aff_matrix = compute_affinity(dets, trks, metric)
+	print(f"aff_matrix {aff_matrix}")
+	
 
 	# association based on the affinity matrix
 	if algm == 'hungar':

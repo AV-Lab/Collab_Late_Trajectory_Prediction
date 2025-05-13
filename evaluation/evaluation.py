@@ -275,6 +275,16 @@ def evaluate_mot(results_folder, name, metric='iou_3d', matching_threshold=0.25,
         matches, unmatched_dets, unmatched_trks, _, _ = data_association(
             gt_objects, track_objects, params, 'greedy', metric, None, 1
         )
+
+        print(f"Frame {frame_id}: Matches: {matches}, Unmatched Dets: {unmatched_dets}, Unmatched Trks: {unmatched_trks}")
+
+        print(f"Frame {frame_id}: GTs: {len(gt_objects)}, Tracks: {len(track_objects)}")
+
+        # print unmatched detections and unmatched tracks
+        # for i in unmatched_dets:
+        #     print(f"Unmatched Det: {gt_objects[i].obj_id} at frame {frame_id} is  {gt_objects[i].get_box3d()}")
+        # for i in unmatched_trks:
+        #     print(f"Unmatched Trk: {track_objects[i].id} at frame {frame_id} is  {track_objects[i].get_box3d()}")
         
         # Count matches, FP, FN
         total_matches += len(matches)
