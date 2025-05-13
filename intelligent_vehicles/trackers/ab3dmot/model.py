@@ -4,7 +4,7 @@
 import numpy as np, os, copy, math
 from intelligent_vehicles.trackers.ab3dmot.box import Box3D
 from intelligent_vehicles.trackers.ab3dmot.matching import data_association
-from intelligent_vehicles.trackers.ab3dmot.kalman_filter import KF
+from intelligent_vehicles.trackers.ab3dmot.Tracker import Track
 from intelligent_vehicles.trackers.ab3dmot.dist_metrics import iou
 from logging_setup import setup_logging
 
@@ -57,36 +57,7 @@ class AB3DMOT(object):
             
         return dets_new
     
-    def within_range(self, theta):
-		# make sure the orientation is within a proper range
-        
-        if theta >= np.pi: theta -= np.pi * 2    # make the theta still in the range
-        if theta < -np.pi: theta += np.pi * 2
-        
-        return theta
-    
-    def orientation_correction(self, theta_pre, theta_obs):
-		# update orientation in propagated tracks and detected boxes so that they are within 90 degree
-		
-		# make the theta still in the range
-        theta_pre = self.within_range(theta_pre)
-        theta_obs = self.within_range(theta_obs)
 
-		# if the angle of two theta is not acute angle, then make it acute
-        if abs(theta_obs - theta_pre) > np.pi / 2.0 and abs(theta_obs - theta_pre) < np.pi * 3 / 2.0:     
-            theta_pre += np.pi       
-            theta_pre = self.within_range(theta_pre)
-
-		# now the angle is acute: < 90 or > 270, convert the case of > 270 to < 90
-        if abs(theta_obs - theta_pre) >= np.pi * 3 / 2.0:
-            if theta_obs > 0: theta_pre += np.pi * 2
-            else: theta_pre -= np.pi * 2
-
-        return theta_pre, theta_obs
-
-    def ego_motion_compensation(self):
-		# inverse ego motion compensation, move trks from the last frame of coordinate to the current frame for matching
-        pass
 
     def predict(self):
 		# get predicted locations from existing tracks
@@ -95,15 +66,9 @@ class AB3DMOT(object):
         for t in range(len(self.trackers)):
 			
 			# propagate locations
-            kf_tmp = self.trackers[t]
-            kf_tmp.kf.predict()
-            kf_tmp.kf.x[3] = self.within_range(kf_tmp.kf.x[3])
-
-			# update statistics
-            kf_tmp.time_since_update += 1 		
-            # trk_tmp = kf_tmp.kf.x.reshape((-1))[:7]
-            # trks.append(Box3D.array2bbox(trk_tmp))
-            trks.append(kf_tmp)
+            track = self.trackers[t]
+            track.predict()
+            trks.append(track)
 
         return trks
 
@@ -116,30 +81,12 @@ class AB3DMOT(object):
                 d = matched[np.where(matched[:, 1] == t)[0], 0]     # a list of index
                 assert len(d) == 1, 'error'
 
-				# update statistics
-                trk.time_since_update = 0		# reset because just updated
-                trk.hits += 1
+                detection = dets[d[0]]
 
-                det_trk = Box3D.array2bbox(trk.kf.x.reshape((-1))[:7])
-                calculated_iou = iou(det_trk, dets[d[0]],self.metric)
-                det_score = dets[d[0]].s
-               
+                #update tracker with the new detection
+                trk.update(detection)
 
-				# update orientation in propagated tracks and detected boxes so that they are within 90 degree
-                bbox3d = Box3D.bbox2array(dets[d[0]])
-                trk.kf.x[3], bbox3d[3] = self.orientation_correction(trk.kf.x[3], bbox3d[3])
-                trk.kf.update(bbox3d)
-                trk.kf.x[3] = self.within_range(trk.kf.x[3])
 
-               
-                
-
-               # Update confidence using determinant of covariance as uncertainty measure
-                det_p = np.linalg.det(trk.kf.P)
-                trk.confidence = det_score * calculated_iou / (1.0 + det_p)
-
-                print(f"Updated tracker {trk.id} with detection {d}: confidence = {trk.confidence:.3f}, IoU = {calculated_iou:.3f}, det_p = {det_p:.3f} det_score = {dets[d[0]].s}")
-            
                 
     def intialize(self, dets, unmatched_dets):
 		# create and initialise new trackers for unmatched detections
@@ -151,10 +98,10 @@ class AB3DMOT(object):
             # a scalar of index
             label = dets[i].obj_class
             score = dets[i].s
-            trk = KF(Box3D.bbox2array(dets[i]),self.ID_count[0],score,label)
+            trk = Track(dets[i],self.ID_count[0])
             self.trackers.append(trk)
             new_id_list.append(trk.id)
-			# print('track ID %s has been initialized due to new detection' % trk.id)
+	
 
             self.ID_count[0] += 1
 
