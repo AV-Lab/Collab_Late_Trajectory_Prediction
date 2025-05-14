@@ -16,7 +16,8 @@ class Track(object):
 		self.current_pos = Box3D.bbox2array(bbox3D)
 		self.history = []
 		self.max_length = 20
-		self.alpha = 0.5
+		self.w = [0.4,0.25,0.35] # weights for confidence update
+		self.alpha = 0.4 # alpha for confidence update
 		self.kalman_filter = KF(self.initial_pos)
 
 
@@ -33,25 +34,22 @@ class Track(object):
 
 
 	def update(self, detection,metric='iou'):
-		# update the kalman filter with the new measurement
-		# self.kalman_filter.kf.predict()
-		# self.kalman_filter.kf.update(bbox3D)
 
 		self.time_since_update = 0
 		self.hits += 1
 
 		# update orientation in propagated tracks and detected boxes so that they are within 90 degree
 		bbox3d = Box3D.bbox2array(detection)
-		self.kf.x[3], bbox3d[3] = self.orientation_correction(self.kf.x[3], bbox3d[3])
-		self.kf.update(bbox3d)
-		self.kf.x[3] = self.within_range(self.kf.x[3])
+		self.kalman_filter.kf.x[3], bbox3d[3] = self.orientation_correction(self.kalman_filter.kf.x[3], bbox3d[3])
+		self.kalman_filter.kf.update(bbox3d)
+		self.kalman_filter.kf.x[3] = self.within_range(self.kalman_filter.kf.x[3])
 
 		
 		#update confidence
 		self.update_confidence(detection,metric)
 		
 		# update the current position of the track
-		self.current_pos = self.kf.x[:7].reshape((7, ))
+		self.current_pos = self.kalman_filter.kf.x[:7].reshape((7, ))
 	
 
 		# update the current position of the track which was predicted
@@ -64,21 +62,24 @@ class Track(object):
 
 		trk_det = Box3D.array2bbox(self.current_pos)
 		
+		
 		calculated_iou = iou(trk_det, detection,metric)
 		
 		det_score = detection.s
 		
 		# Update confidence using determinant of covariance as uncertainty measure
-		det_p = np.linalg.det(self.kf.P)
+		det_p = np.linalg.det(self.kalman_filter.kf.P)
+		det_p = max(det_p, 1e-10)  # Avoid log(0)
 		entropy_uncertainty = np.log(det_p)
 
 		# Calculate trace-based uncertainty (sum of variances)
-		trace_uncertainty = np.trace(self.kf.P)
-
-		conf_new = det_score * calculated_iou / (1.0 + entropy_uncertainty)
+		trace_uncertainty = np.trace(self.kalman_filter.kf.P)
+		old_confidence = self.confidence
+		uncertanity_scale = (1/ (1.0 + trace_uncertainty))
+		conf_new = self.w[0] *det_score + self.w[1] * calculated_iou + self.w[2]*uncertanity_scale
 		self.confidence = self.alpha * self.confidence + (1 - self.alpha) * conf_new
-
-		print(f"Updated tracker {self.id} with detection {detection}: confidence = {self.confidence:.3f}, IoU = {calculated_iou:.3f}, det_p = {det_p:.3f} det_score = {detection.s}")
+		
+		# print(f"\n\nUpdated tracker {self.id} with detection {detection}: \nuncertanity_scale: {uncertanity_scale:.3f}, old_confidence = {old_confidence:.3f}, trace_uncertainty = {trace_uncertainty:.3f}, IoU = {calculated_iou:.3f},new_confidence = {conf_new:.3f}, \nupdated confidence = {self.confidence:.3f}, det_score = {detection.s}")
 	
 	def predict(self):
 		self.kalman_filter.kf.predict()

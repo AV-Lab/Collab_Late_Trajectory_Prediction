@@ -15,7 +15,7 @@ class AB3DMOT(object):
     def __init__(self):                    
    
         self.frame_count = 0
-        self.ID_count = [0]
+        self.ID_count = 0
         self.id_now_output = []
 
         # config
@@ -43,7 +43,7 @@ class AB3DMOT(object):
     def reset(self):
         self.trackers = []
         self.frame_count = 0
-        self.ID_count = [0]
+        self.ID_count = 0
         self.id_now_output = [] 
         
     def process_detections(self, dets):
@@ -74,17 +74,37 @@ class AB3DMOT(object):
 
     def update(self, matched, unmatched_trks, dets):
 		# update matched trackers with assigned detections
-		
         dets = copy.copy(dets)
+        # f"matched {matched} unmatched_trks {unmatched_trks}"
+        # for idx in unmatched_trks:
+        #     # print(f"------ALL unmatched track {self.trackers[idx].id} {self.trackers[idx].category} {self.trackers[idx].time_since_update} {self.trackers[idx].hits}")
+        print(f"------------------------self.trackers {len(self.trackers)} dets: {len(dets)}---------------------------------")
         for t, trk in enumerate(self.trackers):
+            
             if t not in unmatched_trks:
+                
                 d = matched[np.where(matched[:, 1] == t)[0], 0]     # a list of index
                 assert len(d) == 1, 'error'
 
                 detection = dets[d[0]]
 
                 #update tracker with the new detection
-                trk.update(detection)
+                trk.update(detection,self.metric)
+            
+            else:
+                # print(f"This track is not matched track!")
+                # print(f"trk {t} {trk.id} {trk.category} {trk.time_since_update} {trk.hits}")
+                # # check track age has reached max_age
+                if trk.time_since_update >= self.params[trk.category]['max_age']:
+
+                    # self.id_now_output.remove(trk.id)
+                    # print("id_now_output",self.id_now_output)
+                    # print(f"remove track {trk.id} {trk.category} {trk.time_since_update}")
+                    # remove the track
+                    self.trackers.pop(t)
+                    # self.ID_count -= 1
+        print(f"------------------Final shape of self.trackers {len(self.trackers)}")
+                 
 
 
                 
@@ -98,12 +118,12 @@ class AB3DMOT(object):
             # a scalar of index
             label = dets[i].obj_class
             score = dets[i].s
-            trk = Track(dets[i],self.ID_count[0])
+            trk = Track(dets[i],self.ID_count)
             self.trackers.append(trk)
             new_id_list.append(trk.id)
 	
 
-            self.ID_count[0] += 1
+            self.ID_count += 1
 
         return new_id_list
 
@@ -128,7 +148,7 @@ class AB3DMOT(object):
         
         for trk in reversed(self.trackers):
             # Convert from [x,y,z,theta,l,w,h] to [h,w,l,x,y,z,theta]
-            d = Box3D.array2bbox(trk.kf.x[:7].reshape((7, )))     # bbox location from Kalman filter
+            d = Box3D.array2bbox(trk.kalman_filter.kf.x[:7].reshape((7, )))     # bbox location from Kalman filter
             d = Box3D.bbox2array_raw(d)
             obj_class = trk.category
 
@@ -294,12 +314,17 @@ class AB3DMOT(object):
 
 		# matching
         matched, unmatched_dets, unmatched_trks, cost, affi = data_association(dets, trks, self.params, self.algm, self.metric)
+        print(f"trks {len(trks)} dets: {len(dets)} matched {len(matched)}  unmatched_dets: {len(unmatched_dets)} unmatched_trks : {len(unmatched_trks)} {cost} {affi.shape} {self.frame_count}")
 
 		# update trks with matched detection measurement
         self.update(matched, unmatched_trks, dets)
 
 		# create and initialise new trackers for unmatched detections
         new_id_list = self.intialize(dets, unmatched_dets)
+
+        print(f"-------number of tracks in trackers {len(self.trackers)}")
+        print(f"-------number of active tracks {len(self.get_active_tracklets(False))} number of new tracks: {len(unmatched_dets)}")
+        
 
 		# post-processing affinity to convert to the affinity between resulting tracklets
         if self.affi_process:

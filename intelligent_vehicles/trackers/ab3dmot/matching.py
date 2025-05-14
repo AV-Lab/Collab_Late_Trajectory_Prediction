@@ -17,8 +17,7 @@ def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 				trk_class = trk.obj_class # trk.obj_class
 				det_trk = trk
 			else:
-				kf_tmp = trk.kf	
-				det_trk = Box3D.array2bbox(kf_tmp.x.reshape((-1))[:7])
+				det_trk = Box3D.array2bbox(trk.current_pos)
 				trk_class = trk.category # trk.obj_class
 
 			# Check if classes match (if class attributes are found)
@@ -28,7 +27,8 @@ def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 			if det_class != trk_class:
 					aff_matrix[d, t] = -float('inf')  # Very low affinity for mismatched classes
 					continue
-		
+			
+			
 			# choose to use different distance metrics
 			if 'iou' in metric:    	  dist_now = iou(det, det_trk, metric)            
 			elif metric == 'm_dis':   dist_now = -m_distance(det, det_trk, trk_inv_inn_matrices[t])
@@ -37,7 +37,7 @@ def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 			elif metric == 'dist_3d': dist_now = -dist3d(det, trk)              				
 			else: assert False, 'error'
 			aff_matrix[d, t] = dist_now
-			print(f"det_class {det_class} trk_class {trk_class} aff_matrix[{d}, {t}] = {aff_matrix[d, t] , iou(det, det_trk, metric) }")
+			# print(f"det_class {det_class} trk_class {trk_class} aff_matrix[{d}, {t}] = {aff_matrix[d, t] , iou(det, det_trk, metric) }")
 
 	return aff_matrix
 
@@ -87,7 +87,7 @@ def data_association(dets, trks, params, algm, metric, trk_innovation_matrix=Non
 
 	# compute affinity matrix
 	aff_matrix = compute_affinity(dets, trks, metric)
-	print(f"aff_matrix {aff_matrix}")
+	# print(f"aff_matrix {aff_matrix.shape} {metric} {aff_matrix}")
 	
 
 	# association based on the affinity matrix
