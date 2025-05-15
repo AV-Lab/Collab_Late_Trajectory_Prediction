@@ -144,8 +144,7 @@ def read_results(results_folder, name):
                 
                 # Create Box3D object
                 box = Box3D(h, w, l, x, y, z, yaw, confidence, category)
-                box.id = track_id  # Add track ID as attribute
-                box.category = category  # Ensure category is set
+                box.obj_id = track_id  # Add track ID as attribute
                 
                 tracks_by_frame[frame_id].append(box)
                 track_ids_by_frame[frame_id].append(track_id)
@@ -197,19 +196,6 @@ def evaluate_mot(results_folder, name, metric='iou_3d', matching_threshold=0.25,
         'fn': [],
         'id_switches': []
     }
-    
-    # # Define parameters based on available classes (adapt to your actual classes)
-    # params = {
-    #     'car': {'thres': matching_threshold},
-    #     'pedestrian': {'thres': matching_threshold},
-    #     'cyclist': {'thres': matching_threshold},
-    #     'truck': {'thres': matching_threshold},
-    #     'bus': {'thres': matching_threshold},
-    #     'trailer': {'thres': matching_threshold},
-    #     'motorcycle': {'thres': matching_threshold},
-    #     # Add other classes as needed
-    # }
-
 
     params = {
             'car':         {'thres': 0.2, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
@@ -431,17 +417,94 @@ def evaluate_mot(results_folder, name, metric='iou_3d', matching_threshold=0.25,
     
     return results
 
-# Example usage:
-# results = evaluate_mot('path/to/results', 'tracker_name', metric='iou_3d', matching_threshold=0.25)
+
+
+from collections import defaultdict
+
+from collections import defaultdict
+
+def calculate_id_switches(gt_by_frame, trk_by_frame, params, metric='iou_3d'):
+    id_switches = 0
+    prev_trk_ids = {}  # gt_id -> trk_id
+    trk_usage = {}     # trk_id -> last gt_id
+
+    for frame_id in sorted(gt_by_frame.keys()):
+        gt_objects = gt_by_frame[frame_id]
+        track_objects = trk_by_frame.get(frame_id, [])
+        print(f"Frame {frame_id}: GTs: {len(gt_objects)}, Tracks: {len(track_objects)}")
+        
+        matches, _, _, _, _ = data_association(
+            gt_objects, track_objects, params, 'greedy', metric, None, 1
+        )
+
+        curr_matches = {}
+        print(f"Frame {frame_id}: Matches: {matches}")
+
+
+        for gt_idx, trk_idx in matches:
+            gt = gt_objects[gt_idx]
+            trk = track_objects[trk_idx]
+            gt_id = gt.obj_id
+            trk_id = trk.obj_id
+
+            print(f"Frame {frame_id}: GT {gt_id} matched to Track {trk_id}")
+
+            # Check if GT was previously matched to a different tracker ID → switch
+            prev_trk_id = prev_trk_ids.get(gt_id)
+            if prev_trk_id is not None and prev_trk_id != trk_id:
+                id_switches += 1
+                print(f"******************FID switch detected: GT {gt_id} matched to Track {trk_id} (previously matched to Track {prev_trk_id})**************************")
+
+            # Check if the tracker was previously assigned to a different GT ID → switch
+            last_gt_for_trk = trk_usage.get(trk_id)
+            if last_gt_for_trk is not None and last_gt_for_trk != gt_id:
+                id_switches += 1
+                print(f"***********ID switch detected: GT {gt_id} matched to Track {trk_id} (previously matched to GT {last_gt_for_trk})************")
+
+            curr_matches[gt_id] = trk_id
+            # Update trk_usage to reflect the last GT ID for this tracker
+            prev_trk_ids[gt_id] = trk_id
+            trk_usage[trk_id] = gt_id
+
+        # Update prev_trk_ids with current matches, but retain unmatched ones
+        for gt_id in prev_trk_ids:
+            if gt_id not in curr_matches:
+                # Carry forward unmatched ones
+                curr_matches[gt_id] = prev_trk_ids[gt_id]
+
+        prev_trk_ids = curr_matches
+
+
+    return id_switches
+
 
 def main():
     # Tracker Evaluation
     results_folder = "results"
     name = "ego_vehicle"
 
+    params = {
+            'car':         {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'pedestrian':  {'thres': 0.5, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+            'cyclist':     {'thres': 0.6, 'min_hits': 3, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+            'bus':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'van':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'truck':       {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'motorcycle':  {'thres': 0.7, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'default':     {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
+        }
     # Evaluate MOT metrics
-    metrics = evaluate_mot(results_folder, name, visualization=True)
+    # metrics = evaluate_mot(results_folder, name, visualization=True)
+
+    #print("Metrics:", metrics)
+
+    gt_by_frame, tracks_by_frame, gt_ids_by_frame, track_ids_by_frame = read_results(results_folder, name)
+    # Calculate ID switches using data association
+    id_switches = calculate_id_switches(
+        gt_by_frame, tracks_by_frame, params, metric='iou_3d'
+    )
+    print(f"Total ID Switches: {id_switches}")
     
-    print("Metrics:", metrics)
+   
 if __name__ == "__main__":
     main()

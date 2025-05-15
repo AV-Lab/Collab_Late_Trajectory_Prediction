@@ -114,17 +114,24 @@ def data_association(dets, trks, params, algm, metric, trk_innovation_matrix=Non
 	# filter out matches with low affinity
 	matches = []
 	# print(f"matched_indices {matched_indices}")
+	print("-----------------------------------------------------")
 	for m in matched_indices:
+		
+		# if dets[m[0]].obj_id == 7417 or dets[m[0]].obj_class == 'motorcycle':
+		# print(f"Track : {trks[m[1]].obj_id} {trks[m[1]].obj_class} Matched with detection {dets[m[0]].obj_id} {dets[m[0]].obj_class} cost {aff_matrix[m[0], m[1]]}")
+		
 		det_class = dets[m[0]].obj_class
 		thres = params[det_class]['thres']
 		if (aff_matrix[m[0], m[1]] < thres):
 			unmatched_dets.append(m[0])
 			unmatched_trks.append(m[1])
-		else: matches.append(m.reshape(1, 2))
+		else: 
+			matches.append(m.reshape(1, 2))
+			# print(f"Tracks and Detections matched with cost {aff_matrix[m[0], m[1]]} < {thres} ")
 	if len(matches) == 0: 
 		matches = np.empty((0, 2),dtype=int)
 	else: matches = np.concatenate(matches, axis=0)
 
 	# print(f"matches {matches}")
-
+	print("-----------------------------------------------------")
 	return matches, np.array(unmatched_dets), np.array(unmatched_trks), cost, aff_matrix

@@ -28,7 +28,7 @@ class AB3DMOT(object):
         self.algm = 'greedy' #hungar
         self.metric = 'iou_3d'
 
-        # tracker parameters per category
+        # # tracker parameters per category
         self.params = {
             'car':         {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
             'pedestrian':  {'thres': 0.5, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
@@ -39,6 +39,18 @@ class AB3DMOT(object):
             'motorcycle':  {'thres': 0.7, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
             'default':     {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
         }
+
+        # self.params = {
+        #     'car':         {'thres': 0.4, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+        #     'pedestrian':  {'thres': 0.5, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+        #     'cyclist':     {'thres': 0.6, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+        #     'bus':         {'thres': 0.3, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+        #     'van':         {'thres': 0.3, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+        #     'truck':       {'thres': 0.4, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+        #     'motorcycle':  {'thres': 0.7, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+        #     'default':     {'thres': 0.4, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
+        # }
+        
         
     def reset(self):
         self.trackers = []
@@ -78,7 +90,7 @@ class AB3DMOT(object):
         # f"matched {matched} unmatched_trks {unmatched_trks}"
         # for idx in unmatched_trks:
         #     # print(f"------ALL unmatched track {self.trackers[idx].id} {self.trackers[idx].category} {self.trackers[idx].time_since_update} {self.trackers[idx].hits}")
-        print(f"------------------------self.trackers {len(self.trackers)} dets: {len(dets)}---------------------------------")
+        # print(f"------------------------self.trackers {len(self.trackers)} dets: {len(dets)}---------------------------------")
         for t, trk in enumerate(self.trackers):
             
             if t not in unmatched_trks:
@@ -103,7 +115,7 @@ class AB3DMOT(object):
                     # remove the track
                     self.trackers.pop(t)
                     # self.ID_count -= 1
-        print(f"------------------Final shape of self.trackers {len(self.trackers)}")
+        # print(f"------------------Final shape of self.trackers {len(self.trackers)}")
                  
 
 
@@ -314,7 +326,7 @@ class AB3DMOT(object):
 
 		# matching
         matched, unmatched_dets, unmatched_trks, cost, affi = data_association(dets, trks, self.params, self.algm, self.metric)
-        print(f"trks {len(trks)} dets: {len(dets)} matched {len(matched)}  unmatched_dets: {len(unmatched_dets)} unmatched_trks : {len(unmatched_trks)} {cost} {affi.shape} {self.frame_count}")
+        # print(f"trks {len(trks)} dets: {len(dets)} matched {len(matched)}  unmatched_dets: {len(unmatched_dets)} unmatched_trks : {len(unmatched_trks)} {cost} {affi.shape} {self.frame_count}")
 
 		# update trks with matched detection measurement
         self.update(matched, unmatched_trks, dets)
@@ -322,7 +334,7 @@ class AB3DMOT(object):
 		# create and initialise new trackers for unmatched detections
         new_id_list = self.intialize(dets, unmatched_dets)
 
-        print(f"-------number of tracks in trackers {len(self.trackers)}")
+        # print(f"-------number of tracks in trackers {len(self.trackers)}")
         print(f"-------number of active tracks {len(self.get_active_tracklets(False))} number of new tracks: {len(unmatched_dets)}")
         
 

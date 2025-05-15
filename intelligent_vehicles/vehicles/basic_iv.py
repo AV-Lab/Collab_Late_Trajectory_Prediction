@@ -46,10 +46,18 @@ class BasicIntelligentVehicle:
     def _init_predictor(self, predictor_config, data, prediction_horizon, prediction_frequency, forecasting_frequency):
         pass
     
-    def run_detector(self, frame_data):
-        if self.load_gt_detections:
-            # return gt detections
-            bboxs = [{'label': s['label'], 
+
+    def laod_gt_detections(self, frame_data):
+        """
+        Load ground truth detections from the data.
+        
+        Args:
+            data: Data containing ground truth detections.
+        
+        Returns:
+            List of ground truth detections.
+        """
+        bboxs = [{'label': s['label'], 
                       'score': 1.0,
                       'width': s['width'], 
                       'height': s['height'], 
@@ -57,6 +65,12 @@ class BasicIntelligentVehicle:
                       'position': (s['x'], s['y'], s['z']), 
                       'yaw': s['yaw'],
                       'obj_id' : s['obj_id']} for s in frame_data["labels"]]
+        return bboxs     
+       
+    def run_detector(self, frame_data):
+        if self.load_gt_detections:
+            # return gt detections
+            bboxs = self.laod_gt_detections(frame_data)
             return bboxs     
         else:
             logger.info(f"Run detector on current frame data.")
@@ -142,7 +156,7 @@ class BasicIntelligentVehicle:
         # logger.info(f"Results saved for frame {frame_id} in {self.results_folder}.")
                 
     def run(self, t,save_results=True):
-        # print(f"----------Running vehicle {self.name} at time {t}==========")
+       
         # Check if it's time for observation
         if abs(t - self.next_observation_time) <= self.delta:
             self.next_observation_time += 1.0 / self.fps
@@ -153,18 +167,15 @@ class BasicIntelligentVehicle:
                 return None
             # if we recived observation we run detection
             ego_state = frame_data["ego_state"]
+            
             bboxs = self.run_detector(frame_data)
-
            
             # Update the tracker -> tracklets is numpy str array of 3D boxes [bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry,bbox.s,bbox.obj_class]
             tracklets = self.run_tracker(bboxs, ego_state)
-           
 
             if save_results:
-                self.save_results(frame_id, bboxs,tracklets)
-
-
-           
+                gt_detections = self.laod_gt_detections(frame_data)
+                self.save_results(frame_id, gt_detections,tracklets)
             
             # Check if it's time for prediction
             # ask tracker for active tracklets and run predict

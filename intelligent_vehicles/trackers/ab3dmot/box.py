@@ -12,8 +12,11 @@ class Box3D:
         self.l = l      # length
         self.ry = ry    # orientation
         self.s = s      # detection score
-        self.obj_class = None  # object class 
+        self.obj_class = obj_class  # object class 
         self.corners_3d_cam = None
+
+        # Optional fields -> used during eval
+        self.obj_id = None
 
     def __str__(self):
         return 'x: {}, y: {}, z: {}, heading: {}, length: {}, width: {}, height: {}, score: {}'.format(
