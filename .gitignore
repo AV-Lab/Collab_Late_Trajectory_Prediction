@@ -4,3 +4,5 @@ __pycache__/
 data/DeepAccident/
 *.log
 results/
+test*
+temp*

@@ -38,11 +38,17 @@ class Track(object):
 		self.time_since_update = 0
 		self.hits += 1
 
+		print(f"Track {self.id} updated with detection: \n{detection}")
+
 		# update orientation in propagated tracks and detected boxes so that they are within 90 degree
 		bbox3d = Box3D.bbox2array(detection)
 		self.kalman_filter.kf.x[3], bbox3d[3] = self.orientation_correction(self.kalman_filter.kf.x[3], bbox3d[3])
+		print(f"kalman filter x[3]: {self.kalman_filter.kf.x[:7]} bbox3d[3]: {bbox3d[3]}")
+		
 		self.kalman_filter.kf.update(bbox3d)
+		print(f"kalman filter x[3] after update: {self.kalman_filter.kf.x[:7]}")
 		self.kalman_filter.kf.x[3] = self.within_range(self.kalman_filter.kf.x[3])
+		print(f"kalman filter x[3] after range: {self.kalman_filter.kf.x[:7]}")
 
 		
 		#update confidence

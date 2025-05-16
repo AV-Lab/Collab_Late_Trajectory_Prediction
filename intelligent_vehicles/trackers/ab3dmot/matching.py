@@ -115,18 +115,26 @@ def data_association(dets, trks, params, algm, metric, trk_innovation_matrix=Non
 	matches = []
 	# print(f"matched_indices {matched_indices}")
 	print("-----------------------------------------------------")
+	# print umatched_dets, unmatched_trks)
+	for i in range(len(unmatched_dets)):
+		print(f"Unmatched detection {dets[unmatched_dets[i]]} with index {unmatched_dets[i]} \n")
+	for i in range(len(unmatched_trks)):
+		print(f"Unmatched track {trks[unmatched_trks[i]]} with index {unmatched_trks[i]} \n")
 	for m in matched_indices:
-		
-		# if dets[m[0]].obj_id == 7417 or dets[m[0]].obj_class == 'motorcycle':
-		# print(f"Track : {trks[m[1]].obj_id} {trks[m[1]].obj_class} Matched with detection {dets[m[0]].obj_id} {dets[m[0]].obj_class} cost {aff_matrix[m[0], m[1]]}")
-		
 		det_class = dets[m[0]].obj_class
 		thres = params[det_class]['thres']
+		# if dets[m[0]].obj_id == 7417 or dets[m[0]].obj_class == 'motorcycle':
+		print(f"From maching Track : {trks[m[1]].id} {trks[m[1]].current_pos} \nDetection {dets[m[0]]} \nclass: {dets[m[0]].obj_class} cost {aff_matrix[m[0], m[1]]} thres: {thres}\n")
+		
+		
+		
 		if (aff_matrix[m[0], m[1]] < thres):
 			unmatched_dets.append(m[0])
 			unmatched_trks.append(m[1])
+			
 		else: 
 			matches.append(m.reshape(1, 2))
+			print(f"Tracks and Detections matched with cost {aff_matrix[m[0], m[1]]} < {thres} \n\n")
 			# print(f"Tracks and Detections matched with cost {aff_matrix[m[0], m[1]]} < {thres} ")
 	if len(matches) == 0: 
 		matches = np.empty((0, 2),dtype=int)

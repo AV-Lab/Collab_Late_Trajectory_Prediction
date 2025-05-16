@@ -36,7 +36,7 @@ class AB3DMOT(object):
             'bus':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
             'van':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
             'truck':       {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-            'motorcycle':  {'thres': 0.7, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'motorcycle':  {'thres': 0.45, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
             'default':     {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
         }
 
@@ -333,10 +333,13 @@ class AB3DMOT(object):
 
 		# create and initialise new trackers for unmatched detections
         new_id_list = self.intialize(dets, unmatched_dets)
-
-        # print(f"-------number of tracks in trackers {len(self.trackers)}")
+        # number of matched, unmatched_dets, unmatched_trks
+        print(f"matched {len(matched)} unmatched_dets: {len(unmatched_dets)} unmatched_trks : {len(unmatched_trks)}")
+        # print(f"number of mathches{len(self.matched)}")
         print(f"-------number of active tracks {len(self.get_active_tracklets(False))} number of new tracks: {len(unmatched_dets)}")
-        
+        active_tracks = self.get_active_tracklets(True)
+        for track in (active_tracks):
+            print(f"--------------From active tracks {track.id} {track.get_3dbbox()}----------------")
 
 		# post-processing affinity to convert to the affinity between resulting tracklets
         if self.affi_process:
