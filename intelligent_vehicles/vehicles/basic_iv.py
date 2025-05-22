@@ -71,14 +71,15 @@ class BasicIntelligentVehicle:
         if self.load_gt_detections:
             # return gt detections
             bboxs = self.laod_gt_detections(frame_data)
-            return bboxs     
+            calibration = frame_data["calibration"]
+            return bboxs,  calibration     
         else:
             logger.info(f"Run detector on current frame data.")
             # to implement
             # run detect method 
 
-    def run_tracker(self, detections, ego_pose):
-        self.tracker.track(detections, ego_pose)
+    def run_tracker(self, detections, ego_pose,calibration):
+        self.tracker.track(detections, ego_pose,calibration)
         tracklets = self.tracker.get_tracked_objects()
 
 
@@ -134,7 +135,7 @@ class BasicIntelligentVehicle:
         os.makedirs(self.results_folder, exist_ok=True)
 
         # Save GT
-        gt_file = os.path.join(self.results_folder, f"{self.name}_gt.txt")
+        gt_file = os.path.join(self.results_folder, f"{self.name}_gt_secs.txt")
         
         # Determine if we should write or append
         mode = 'w' if frame_id == 1 else 'a'
@@ -145,16 +146,80 @@ class BasicIntelligentVehicle:
                         f"{g['yaw']} {g['length']} {g['width']} {g['height']} {g['score']}\n")
         
         # Save tracklets
-        tracklets_file = os.path.join(self.results_folder, f"{self.name}_tracklets.txt")
+        tracklets_file = os.path.join(self.results_folder, f"{self.name}_tracklets_secs.txt")
         
         with open(tracklets_file, mode) as f:
             for t in tracklets:
-                bbox3D = t.get_3dbbox()  # [bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry, bbox.s, bbox.obj_class]
+                bbox3D = t.track_bbox() # [bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry, bbox.s, bbox.obj_class]
+
+                f.write(f"{frame_id} {t.id} {t.category} {bbox3D.x} {bbox3D.y} {bbox3D.z} {bbox3D.ry} "
+                        f"{bbox3D.l} {bbox3D.w} {bbox3D.h} {t.confidence}\n")
                 # frame_id, id, category, x, y, z, ry, l, w, h, confidence
-                f.write(f"{frame_id} {t.id} {t.category} {bbox3D[3]} {bbox3D[4]} {bbox3D[5]} {bbox3D[6]} "
-                        f"{bbox3D[2]} {bbox3D[1]} {bbox3D[0]} {t.confidence}\n")
+                # f.write(f"{frame_id} {t.id} {t.category} {bbox3D[3]} {bbox3D[4]} {bbox3D[5]} {bbox3D[6]} "
+                #         f"{bbox3D[2]} {bbox3D[1]} {bbox3D[0]} {t.confidence}\n")
         # logger.info(f"Results saved for frame {frame_id} in {self.results_folder}.")
+
+    def transform_to_world(self, detections,calibration):
+        """
+        Transform 3D bounding boxes from LiDAR frame to world coordinates.
+        
+        Args:
+            detections: List of detection dictionaries from load_gt_detections
                 
+        Returns:
+            List of detection dictionaries with world coordinates
+        """
+        # Get transformation matrices
+        lidar_to_ego = calibration['lidar_to_ego']
+        ego_to_world = calibration['ego_to_world']
+        
+        # Combine to get direct lidar-to-world transformation
+        lidar_to_world = np.matmul(ego_to_world, lidar_to_ego)
+        
+        world_detections = []
+        
+        for det in detections:
+            # Create a copy of the original detection
+            new_det = det.copy()
+            
+            # Extract position
+            x, y, z = det['position']
+            
+            # Create homogeneous coordinates for the position
+            pos_lidar = np.array([x, y, z, 1.0])
+            
+            # Transform position to world coordinates
+            pos_world = np.matmul(lidar_to_world, pos_lidar)
+            
+            # Update the position with world coordinates
+            new_det['position'] = (pos_world[0], pos_world[1], pos_world[2])
+            
+            # Handle rotation transformation
+            # Extract rotation part of the transformation matrix
+            R_lidar_to_world = lidar_to_world[:3, :3]
+            
+            # Create rotation matrix for the original orientation in lidar frame
+            yaw = det['yaw']
+            cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
+            R_obj_lidar = np.array([
+                [cos_yaw, 0, sin_yaw],
+                [0, 1, 0],
+                [-sin_yaw, 0, cos_yaw]
+            ])
+            
+            # Combine rotations to get object orientation in world frame
+            R_obj_world = np.matmul(R_lidar_to_world, R_obj_lidar)
+            
+            # Extract the new heading angle in world frame
+            yaw_world = np.arctan2(R_obj_world[0, 2], R_obj_world[0, 0])
+            
+            # Update the yaw with world orientation
+            new_det['yaw'] = yaw_world
+            
+            
+            world_detections.append(new_det)
+        
+        return world_detections    
     def run(self, t,save_results=True):
        
         # Check if it's time for observation
@@ -168,15 +233,19 @@ class BasicIntelligentVehicle:
             # if we recived observation we run detection
             ego_state = frame_data["ego_state"]
             
-            bboxs = self.run_detector(frame_data)
+            bboxs,calibration = self.run_detector(frame_data)
            
             # Update the tracker -> tracklets is numpy str array of 3D boxes [bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry,bbox.s,bbox.obj_class]
-            tracklets = self.run_tracker(bboxs, ego_state)
+            tracklets = self.run_tracker(bboxs, ego_state,calibration)
 
             if save_results:
                 gt_detections = self.laod_gt_detections(frame_data)
-                self.save_results(frame_id, gt_detections,tracklets)
+                
+                # Transform detections to world coordinates
+                gt_detections_wc = self.transform_to_world(gt_detections,calibration)
+                self.save_results(frame_id, gt_detections_wc,tracklets)
             
+
             # Check if it's time for prediction
             # ask tracker for active tracklets and run predict
             #if (t - self.last_prediction_time) >= (1.0 / self.prediction_frequency):            

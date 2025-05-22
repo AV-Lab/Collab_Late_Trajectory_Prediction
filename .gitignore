@@ -5,4 +5,5 @@ data/DeepAccident/
 *.log
 results/
 test*
+log*
 temp*

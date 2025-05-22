@@ -12,14 +12,14 @@ np.set_printoptions(suppress=True, precision=3)
 
 # A Baseline of 3D Multi-Object Tracking
 class AB3DMOT(object):			  	
-    def __init__(self):                    
+    def __init__(self,calibration=None):                    
    
         self.frame_count = 0
         self.ID_count = 0
         self.id_now_output = []
 
         # config
-        self.ego_com = False             # ego motion compensation
+        self.ego_com = True             # ego motion compensation
         self.affi_process = True        # post-processing affinity
 
         # debug
@@ -27,30 +27,22 @@ class AB3DMOT(object):
         self.debug_id = None
         self.algm = 'greedy' #hungar
         self.metric = 'iou_3d'
+        self.verbose = False
 
         # # tracker parameters per category
         self.params = {
-            'car':         {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-            'pedestrian':  {'thres': 0.5, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
-            'cyclist':     {'thres': 0.6, 'min_hits': 3, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
-            'bus':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-            'van':         {'thres': 0.3, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-            'truck':       {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-            'motorcycle':  {'thres': 0.45, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-            'default':     {'thres': 0.4, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
+            'car':         {'thres': 0.40, 'low_thres': 0.30, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'pedestrian':  {'thres': 0.50, 'low_thres': 0.30, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+            'cyclist':     {'thres': 0.60, 'low_thres': 0.20, 'min_hits': 3, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
+            'bus':         {'thres': 0.30, 'low_thres': 0.25, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'van':         {'thres': 0.30, 'low_thres': 0.25, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'truck':       {'thres': 0.40, 'low_thres': 0.25, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'motorcycle':  {'thres': 0.25, 'low_thres': 0.10, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'default':     {'thres': 0.40, 'low_thres': 0.30, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
         }
 
-        # self.params = {
-        #     'car':         {'thres': 0.4, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-        #     'pedestrian':  {'thres': 0.5, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
-        #     'cyclist':     {'thres': 0.6, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
-        #     'bus':         {'thres': 0.3, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-        #     'van':         {'thres': 0.3, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-        #     'truck':       {'thres': 0.4, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-        #     'motorcycle':  {'thres': 0.7, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
-        #     'default':     {'thres': 0.4, 'min_hits': 1, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0}
-        # }
-        
+        self.calibration = calibration
+
         
     def reset(self):
         self.trackers = []
@@ -71,7 +63,7 @@ class AB3DMOT(object):
     
 
 
-    def predict(self):
+    def prediction(self):
 		# get predicted locations from existing tracks
 
         trks = []
@@ -84,56 +76,108 @@ class AB3DMOT(object):
 
         return trks
 
+
+    def ego_motion_compensation(self,detections):
+        """
+        Transform 3D bounding boxes from LiDAR frame to world coordinates.
+        
+        Args:
+            detections: List of Box3D objects in LiDAR frame
+            calibration: Dictionary with calibration matrices
+            
+        Returns:
+            List of Box3D objects with world coordinate positions
+        """
+        # Get transformation matrices
+        lidar_to_ego = self.calibration['lidar_to_ego']
+        ego_to_world = self.calibration['ego_to_world']
+        
+        # Combine to get direct lidar-to-world transformation
+        lidar_to_world = np.matmul(ego_to_world, lidar_to_ego)
+        
+        compensated_detections = []
+        
+        for bbox in detections:
+            # Create a new Box3D object to avoid modifying the original
+            new_bbox = Box3D(
+                h=bbox.h,
+                w=bbox.w,
+                l=bbox.l,
+                s=bbox.s,
+                obj_class=bbox.obj_class
+            )
+            
+            # print(f"Before compensation bbox {bbox.x} {bbox.y} {bbox.z} {bbox.ry} {bbox.l} {bbox.w} {bbox.h}")
+            # Extract position
+            pos_lidar = np.array([bbox.x, bbox.y, bbox.z, 1.0])
+            
+            # Transform position to world coordinates
+            pos_world = np.matmul(lidar_to_world, pos_lidar)
+            
+            # Set the world coordinates
+            new_bbox.x, new_bbox.y, new_bbox.z = pos_world[:3]
+            
+            # Handle rotation transformation
+            # Extract rotation part of the transformation matrix
+            R_lidar_to_world = lidar_to_world[:3, :3]
+            
+            # Create rotation matrix for the original orientation in lidar frame
+            R_obj_lidar = Box3D.roty(bbox.ry)
+            
+            # Combine rotations to get object orientation in world frame
+            R_obj_world = np.matmul(R_lidar_to_world, R_obj_lidar)
+            
+            # Extract the new heading angle in world frame (ry)
+            # For a rotation matrix [ [cos(θ), 0, sin(θ)], [0, 1, 0], [-sin(θ), 0, cos(θ)] ]
+            # We can extract θ as arctan2(r[0,2], r[0,0])
+            new_bbox.ry = np.arctan2(R_obj_world[0, 2], R_obj_world[0, 0])
+            
+            # Reset corners_3d_cam since we changed the box
+            new_bbox.corners_3d_cam = None
+            
+            compensated_detections.append(new_bbox)
+           
+        
+        return compensated_detections
+    
     def update(self, matched, unmatched_trks, dets):
+
 		# update matched trackers with assigned detections
         dets = copy.copy(dets)
-        # f"matched {matched} unmatched_trks {unmatched_trks}"
-        # for idx in unmatched_trks:
-        #     # print(f"------ALL unmatched track {self.trackers[idx].id} {self.trackers[idx].category} {self.trackers[idx].time_since_update} {self.trackers[idx].hits}")
-        # print(f"------------------------self.trackers {len(self.trackers)} dets: {len(dets)}---------------------------------")
+
+        matched_tracks = [m[1] for m in matched]
         for t, trk in enumerate(self.trackers):
             
-            if t not in unmatched_trks:
+            if t  in matched_tracks:
                 
                 d = matched[np.where(matched[:, 1] == t)[0], 0]     # a list of index
                 assert len(d) == 1, 'error'
 
                 detection = dets[d[0]]
-
-                #update tracker with the new detection
+                
                 trk.update(detection,self.metric)
-            
+                
             else:
-                # print(f"This track is not matched track!")
-                # print(f"trk {t} {trk.id} {trk.category} {trk.time_since_update} {trk.hits}")
-                # # check track age has reached max_age
+            
+                if self.verbose:
+                    print(f"----track {trk.track_bbox()} is not matched track age is {trk.time_since_update}!----")
+                
+                # check track age has reached max_age
                 if trk.time_since_update >= self.params[trk.category]['max_age']:
-
-                    # self.id_now_output.remove(trk.id)
-                    # print("id_now_output",self.id_now_output)
-                    # print(f"remove track {trk.id} {trk.category} {trk.time_since_update}")
-                    # remove the track
                     self.trackers.pop(t)
-                    # self.ID_count -= 1
-        # print(f"------------------Final shape of self.trackers {len(self.trackers)}")
-                 
-
-
+                  
                 
     def intialize(self, dets, unmatched_dets):
 		# create and initialise new trackers for unmatched detections
-
-		# dets = copy.copy(dets)
-      
+        
         new_id_list = list()		# new ID generated for unmatched detections
         for i in unmatched_dets: 
-            # a scalar of index
-            label = dets[i].obj_class
-            score = dets[i].s
             trk = Track(dets[i],self.ID_count)
             self.trackers.append(trk)
             new_id_list.append(trk.id)
-	
+           
+            if self.verbose:
+                print(f"------------------New track {trk.id} {trk.category} {trk.time_since_update} {trk.hits}")
 
             self.ID_count += 1
 
@@ -295,7 +339,73 @@ class AB3DMOT(object):
         affi = affi[:, permute_col]
 
         return affi
-    def track(self, detections, ego_pose):
+
+        
+    def association(self, dets, trks):
+        """
+        Perform two-stage association between detections and tracks.
+        
+        Args:
+            dets: List of detection objects
+            trks: List of track objects
+            
+        Returns:
+            Tuple of (matched_pairs, unmatched_det_indices, unmatched_trk_indices)
+        """
+        if not isinstance(dets, list) or not isinstance(trks, list):
+            raise TypeError("dets and trks must be lists")
+        
+        if not dets or not trks:
+            return [], list(range(len(dets))), list(range(len(trks)))
+        
+        # First association
+        matched, unmatched_dets, unmatched_trks, cost, affi = data_association(
+            dets, trks, self.params, self.algm, self.metric,verbose=self.verbose
+        )
+
+        if self.verbose:
+            print(f"First matched {matched} unmatched_dets {unmatched_dets} unmatched_trks {unmatched_trks}")
+
+        # Skip second association if no candidates for rematching
+        if len(unmatched_dets)==0 or len(unmatched_trks)==0:
+            return matched, unmatched_dets, unmatched_trks
+
+        # Prepare rematch candidates
+        rematch_dets = [dets[i] for i in unmatched_dets]
+        rematch_trks = [trks[i] for i in unmatched_trks]
+
+        if self.verbose:
+            for i in range(len(rematch_dets)):
+                print(f"rematch_dets: {rematch_dets[i]}")
+                print(f"rematch_trks: {rematch_trks[i].track_bbox()}")
+        
+        
+        # Create mappings using enumerate for efficiency
+        det_idx_map = dict(enumerate(unmatched_dets))
+        trk_idx_map = dict(enumerate(unmatched_trks))
+
+        # Second association
+        matched_indices, unmatched_det_indices, unmatched_trk_indices, cost, affi = data_association(
+            rematch_dets, rematch_trks, self.params, self.algm, self.metric, sec_association=True,verbose=self.verbose
+        )
+
+
+
+        # Combine results from both association rounds
+        rematch_pairs = np.array([(det_idx_map[d], trk_idx_map[t]) for d, t in matched_indices])
+        all_matched = np.concatenate([matched, rematch_pairs]) if len(rematch_pairs) > 0 else matched
+        
+        
+        final_unmatched_dets = [det_idx_map[i] for i in unmatched_det_indices]
+        final_unmatched_trks = [trk_idx_map[i] for i in unmatched_trk_indices]
+
+        if self.verbose:
+            print(f"all_matched {all_matched} unmatched_det_indices {unmatched_det_indices} unmatched_trk_indices {unmatched_trk_indices}")
+        
+        return all_matched, final_unmatched_dets, final_unmatched_trks
+
+
+    def track(self, detections, ego_pose,calibration):
         """
         Params:
             dets_all: dict
@@ -309,7 +419,9 @@ class AB3DMOT(object):
 		"""	
 
         self.frame_count += 1
+        self.calibration = calibration
 
+        print(f"\n****** frame {self.frame_count} ******")
 		# recall the last frames of outputs for computing ID correspondences during affinity processing
         self.id_past_output = copy.copy(self.id_now_output)
         self.id_past = [trk.id for trk in self.trackers]
@@ -318,29 +430,22 @@ class AB3DMOT(object):
         dets = self.process_detections(detections)
 
 		# tracks propagation based on velocity
-        trks = self.predict()
+        trks = self.prediction()
 
 		# ego motion compensation
-        if self.ego_com and ego_pose is not None:
-            trks = self.ego_motion_compensation(trks)
+        if self.ego_com:
+            dets_wc = self.ego_motion_compensation(dets) # detections in world coordinates
+              
 
-		# matching
-        matched, unmatched_dets, unmatched_trks, cost, affi = data_association(dets, trks, self.params, self.algm, self.metric)
-        # print(f"trks {len(trks)} dets: {len(dets)} matched {len(matched)}  unmatched_dets: {len(unmatched_dets)} unmatched_trks : {len(unmatched_trks)} {cost} {affi.shape} {self.frame_count}")
+        # association between detections and tracks
+        matched, unmatched_dets, unmatched_trks = self.association(dets_wc, trks)
 
-		# update trks with matched detection measurement
-        self.update(matched, unmatched_trks, dets)
+        # update matched trackers with assigned detections
+        self.update(matched, unmatched_trks, dets_wc)
 
-		# create and initialise new trackers for unmatched detections
-        new_id_list = self.intialize(dets, unmatched_dets)
-        # number of matched, unmatched_dets, unmatched_trks
-        print(f"matched {len(matched)} unmatched_dets: {len(unmatched_dets)} unmatched_trks : {len(unmatched_trks)}")
-        # print(f"number of mathches{len(self.matched)}")
-        print(f"-------number of active tracks {len(self.get_active_tracklets(False))} number of new tracks: {len(unmatched_dets)}")
-        active_tracks = self.get_active_tracklets(True)
-        for track in (active_tracks):
-            print(f"--------------From active tracks {track.id} {track.get_3dbbox()}----------------")
+        new_id_list = self.intialize(dets_wc, unmatched_dets)
 
 		# post-processing affinity to convert to the affinity between resulting tracklets
-        if self.affi_process:
-            affi = self.process_affi(affi, matched, unmatched_dets, new_id_list, dets)
+        # if self.affi_process:
+        #     affi = self.process_affi(affi, matched, unmatched_dets, new_id_list, dets_wc)
+

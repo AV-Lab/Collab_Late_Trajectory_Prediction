@@ -11,6 +11,8 @@ import numpy as np
 from collections import defaultdict
 import matplotlib.pyplot as plt
 
+from collections import defaultdict
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from intelligent_vehicles.trackers.ab3dmot.box import Box3D
@@ -99,8 +101,8 @@ def read_results(results_folder, name):
         gt_ids_by_frame: Dictionary mapping frame_id to list of ground truth IDs
         track_ids_by_frame: Dictionary mapping frame_id to list of track IDs
     """
-    gt_file = os.path.join(results_folder, f"{name}_gt.txt")
-    tracklets_file = os.path.join(results_folder, f"{name}_tracklets.txt")
+    gt_file = os.path.join(results_folder, f"{name}_gt_sec.txt")
+    tracklets_file = os.path.join(results_folder, f"{name}_tracklets_sec.txt")
     
     gt_by_frame = defaultdict(list)
     tracks_by_frame = defaultdict(list)
@@ -121,11 +123,15 @@ def read_results(results_folder, name):
                 score = float(data[10])
                 
                 # Create Box3D object similar to how it's used in your tracker
-                box = Box3D(h, w, l, x, y, z, yaw, score, label)
+                box = Box3D(x, y, z, h, w, l, yaw, score, label)
+
+    
                 box.obj_id = obj_id  # Add ID as attribute
                 
                 gt_by_frame[frame_id].append(box)
                 gt_ids_by_frame[frame_id].append(obj_id)
+                # print(f"data : {data}")
+                
     else:
         print(f"Warning: Ground truth file {gt_file} not found")
     
@@ -136,14 +142,15 @@ def read_results(results_folder, name):
                 data = line.strip().split()
                 frame_id = int(data[0])
                 track_id = int(data[1])
-                category = data[2]
+                label = data[2]
                 x, y, z = float(data[3]), float(data[4]), float(data[5])
                 yaw = float(data[6])
                 l, w, h = float(data[7]), float(data[8]), float(data[9])
                 confidence = float(data[10])
                 
                 # Create Box3D object
-                box = Box3D(h, w, l, x, y, z, yaw, confidence, category)
+                
+                box = Box3D(x, y, z, h, w, l, yaw, confidence, label)
                 box.obj_id = track_id  # Add track ID as attribute
                 
                 tracks_by_frame[frame_id].append(box)
@@ -419,9 +426,8 @@ def evaluate_mot(results_folder, name, metric='iou_3d', matching_threshold=0.25,
 
 
 
-from collections import defaultdict
 
-from collections import defaultdict
+
 
 def calculate_id_switches(gt_by_frame, trk_by_frame, params, metric='iou_3d'):
     id_switches = 0
@@ -433,12 +439,27 @@ def calculate_id_switches(gt_by_frame, trk_by_frame, params, metric='iou_3d'):
         track_objects = trk_by_frame.get(frame_id, [])
         print(f"Frame {frame_id}: GTs: {len(gt_objects)}, Tracks: {len(track_objects)}")
         
-        matches, _, _, _, _ = data_association(
-            gt_objects, track_objects, params, 'greedy', metric, None, 1
+        matches,unmatched_dets, unmatched_trks, cost, aff_matrix = data_association(
+            gt_objects, track_objects, params, 'greedy', metric
         )
 
+        print(f"Frame {frame_id}:Match {matches} Unmatched Dets: {unmatched_dets} Unmatched Trks: {unmatched_trks}")
+        for i in unmatched_dets:
+            print(f"Unmatched Det: {gt_objects[i].obj_id} at frame {frame_id} is  {gt_objects[i]}")
+        for i in unmatched_trks:
+            print(f"Unmatched Trk: {track_objects[i].obj_id} at frame {frame_id} is  {track_objects[i]}")
+        for i,j in matches:
+            print(f"Match: GT {gt_objects[i].obj_id} matched to Track {track_objects[j].obj_id}")
+
+
+        # print(f"track_objects {gt_objects}: track_objects: {track_objects}")
+        # for i, trk in enumerate(track_objects):
+        #     print(f"Track {i}: {trk}")
+        # for i, gt in enumerate(gt_objects):
+        #     print(f"GT {i}: {gt.get_box3d()}")
+
         curr_matches = {}
-        print(f"Frame {frame_id}: Matches: {matches}")
+        
 
 
         for gt_idx, trk_idx in matches:
@@ -453,13 +474,13 @@ def calculate_id_switches(gt_by_frame, trk_by_frame, params, metric='iou_3d'):
             prev_trk_id = prev_trk_ids.get(gt_id)
             if prev_trk_id is not None and prev_trk_id != trk_id:
                 id_switches += 1
-                print(f"******************FID switch detected: GT {gt_id} matched to Track {trk_id} (previously matched to Track {prev_trk_id})**************************")
+                print(f"******************FID switch detected {gt_objects[gt_idx].obj_class}: GT {gt_id} matched to Track {trk_id} (previously matched to Track {prev_trk_id}) Num of switchs: {id_switches}**************************")
 
             # Check if the tracker was previously assigned to a different GT ID → switch
             last_gt_for_trk = trk_usage.get(trk_id)
             if last_gt_for_trk is not None and last_gt_for_trk != gt_id:
                 id_switches += 1
-                print(f"***********ID switch detected: GT {gt_id} matched to Track {trk_id} (previously matched to GT {last_gt_for_trk})************")
+                print(f"***********ID switch detected {gt_objects[gt_idx].obj_class}: GT {gt_id} matched to Track {trk_id} (previously matched to GT {last_gt_for_trk}) Num of switchs: {id_switches} ************")
 
             curr_matches[gt_id] = trk_id
             # Update trk_usage to reflect the last GT ID for this tracker

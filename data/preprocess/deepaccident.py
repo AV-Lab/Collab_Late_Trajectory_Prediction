@@ -59,10 +59,10 @@ def parse_label_file(label_path):
                 'x': float(data[1]),
                 'y': float(data[2]),
                 'z': float(data[3]),
-                'width': float(data[4]),
-                'height': float(data[5]),
-                'length': float(data[6]),
-                'yaw': float(data[7]) + np.pi/2,
+                'length': float(data[4]),
+                'width': float(data[5]),
+                'height': float(data[6]),
+                'yaw': float(data[7]), # + np.pi/2
                 'vel_x': float(data[8]),
                 'vel_y': float(data[9]),
                 'obj_id': int(data[10])

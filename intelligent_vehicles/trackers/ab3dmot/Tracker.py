@@ -2,7 +2,7 @@ import numpy as np
 from intelligent_vehicles.trackers.ab3dmot.box import Box3D
 from filterpy.kalman import KalmanFilter, UnscentedKalmanFilter, MerweScaledSigmaPoints
 from intelligent_vehicles.trackers.ab3dmot.dist_metrics import iou
-
+import copy
 
 
 class Track(object):
@@ -25,12 +25,21 @@ class Track(object):
 	def get_3dbbox(self):
 		# return the 3D bbox in the state
 		tracked_bbox = Box3D()
-		tracked_bbox.x, tracked_bbox.y, tracked_bbox.z, tracked_bbox.ry, tracked_bbox.l, tracked_bbox.w, tracked_bbox.h = self.kalman_filter.kf.x[:7].reshape((7, ))
+		tracked_bbox.x, tracked_bbox.y, tracked_bbox.z, tracked_bbox.ry, tracked_bbox.l, tracked_bbox.w, tracked_bbox.h = self.current_pos #self.kalman_filter.kf.x[:7].reshape((7, ))
 		tracked_bbox.s = self.confidence
 		tracked_bbox.obj_class = self.category
 
 		bbox = Box3D.bbox2array_raw(tracked_bbox) #[bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry]
 		return bbox
+	def track_bbox(self):
+		# return the 3D bbox in the state
+		tracked_bbox = Box3D()
+		tracked_bbox.x, tracked_bbox.y, tracked_bbox.z, tracked_bbox.ry, tracked_bbox.l, tracked_bbox.w, tracked_bbox.h = self.current_pos
+		#self.kalman_filter.kf.x[:7].reshape((7, ))
+		tracked_bbox.s = self.confidence
+		tracked_bbox.obj_class = self.category
+		
+		return tracked_bbox
 
 
 	def update(self, detection,metric='iou'):
@@ -38,25 +47,23 @@ class Track(object):
 		self.time_since_update = 0
 		self.hits += 1
 
-		print(f"Track {self.id} updated with detection: \n{detection}")
+		bbox3d = Box3D.bbox2array(detection)
+
+		# update the current position of the track
+		self.current_pos = copy.copy(bbox3d)
 
 		# update orientation in propagated tracks and detected boxes so that they are within 90 degree
-		bbox3d = Box3D.bbox2array(detection)
 		self.kalman_filter.kf.x[3], bbox3d[3] = self.orientation_correction(self.kalman_filter.kf.x[3], bbox3d[3])
-		print(f"kalman filter x[3]: {self.kalman_filter.kf.x[:7]} bbox3d[3]: {bbox3d[3]}")
+		# print(f"kalman filter x[3]: {self.kalman_filter.kf.x[:7]} bbox3d[3]: {bbox3d[3]}")
 		
 		self.kalman_filter.kf.update(bbox3d)
-		print(f"kalman filter x[3] after update: {self.kalman_filter.kf.x[:7]}")
+		# print(f"kalman filter x[3] after update: {self.kalman_filter.kf.x[:7]}")
 		self.kalman_filter.kf.x[3] = self.within_range(self.kalman_filter.kf.x[3])
-		print(f"kalman filter x[3] after range: {self.kalman_filter.kf.x[:7]}")
+		# print(f"kalman filter x[3] after range: {self.kalman_filter.kf.x[:7]}")
 
 		
 		#update confidence
 		self.update_confidence(detection,metric)
-		
-		# update the current position of the track
-		self.current_pos = self.kalman_filter.kf.x[:7].reshape((7, ))
-	
 
 		# update the current position of the track which was predicted
 		self.history[-1] = self.current_pos
@@ -88,7 +95,16 @@ class Track(object):
 		# print(f"\n\nUpdated tracker {self.id} with detection {detection}: \nuncertanity_scale: {uncertanity_scale:.3f}, old_confidence = {old_confidence:.3f}, trace_uncertainty = {trace_uncertainty:.3f}, IoU = {calculated_iou:.3f},new_confidence = {conf_new:.3f}, \nupdated confidence = {self.confidence:.3f}, det_score = {detection.s}")
 	
 	def predict(self):
+		# print(f"predict track {self.id} with time since update {self.time_since_update} and current pos {self.kalman_filter.kf.x[:7].reshape((7, ))} ")
+		# print("Before predict:")
+		# print("State (x):", self.kalman_filter.kf.x)
+		# print("Covariance (P):", np.diag(self.kalman_filter.kf.P))  # 
+	
 		self.kalman_filter.kf.predict()
+
+		# print("After predict:")
+		# print("State (x):", self.kalman_filter.kf.x)
+		# print("Covariance (P):", np.diag(self.kalman_filter.kf.P))
 		
 		self.kalman_filter.kf.x[3] = self.within_range(self.kalman_filter.kf.x[3])
 
@@ -96,7 +112,8 @@ class Track(object):
 		self.time_since_update += 1 		
 
 		# update the current position of the track
-		self.current_pos = self.kalman_filter.kf.x[:7].reshape((7, ))
+		self.current_pos = copy.copy(self.kalman_filter.kf.x[:7].reshape((7, )))
+		# print(f"after predict {self.kalman_filter.kf.x[:7].reshape((7, ))}")
 
 		# add the new measurement to the history
 		self.history.append(self.current_pos)
@@ -148,7 +165,8 @@ class KF(object):
 	"""
 	def __init__(self, initial_pos,dim_x=10, dim_z=7):
 
-		self.kf = KalmanFilter(dim_x=10, dim_z=7,)       
+		self.kf = KalmanFilter(dim_x=10, dim_z=7)    
+		 
 	
 		# state x dimension 10: x, y, z, theta, l, w, h, dx, dy, dz
 		# constant velocity model: x' = x + dx, y' = y + dy, z' = z + dz 
@@ -186,6 +204,7 @@ class KF(object):
 
 		# initialize data
 		self.kf.x[:7] = initial_pos.reshape((7, 1))
+		self.kf.x[7:] = np.random.normal(0, 0.01, (3, 1))
 
 	def compute_innovation_matrix(self):
 		""" compute the innovation matrix for association with mahalanobis distance

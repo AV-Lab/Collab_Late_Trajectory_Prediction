@@ -14,7 +14,7 @@ class AB3DMOTWrapper:
         self.tracker = AB3DMOT()
         self.tracker.reset()
         
-    def track(self, detections, ego_pose):
+    def track(self, detections,ego_pose,calibration):
         # Convert a dict-based detection to array format: [h, w, l, x, y, z, ry, score]
         
         dets = []
@@ -31,8 +31,8 @@ class AB3DMOTWrapper:
             detection = [h, w, l, x, y, z, ry, s, category]
             dets.append(detection)
             
-        self.tracker.track(dets, ego_pose)
+        self.tracker.track(dets, ego_pose,calibration)
     
-    def get_tracked_objects(self):
+    def get_tracked_objects(self,return_trks=True):
         # Get the tracked objects from the tracker
-        return self.tracker.get_active_tracklets()
+        return self.tracker.get_active_tracklets(return_trks)
