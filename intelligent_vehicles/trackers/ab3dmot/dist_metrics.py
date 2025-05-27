@@ -138,31 +138,54 @@ def iou(box_a, box_b, metric='giou_3d'):
 	rect/ref camera coord:
     right x, down y, front z
 	'''	
-
 	# compute 2D related measures
 	boxa_bot, boxb_bot = compute_bottom(box_a, box_b)
-	I_2D = compute_inter_2D(boxa_bot, boxb_bot)
 
-	# only needed for GIoU
-	if 'giou' in metric:
-		C_2D = convex_area(boxa_bot, boxb_bot)
 
-	if '2d' in metric:		 	# return 2D IoU/GIoU
-		U_2D = box_a.w * box_a.l + box_b.w * box_b.l - I_2D
-		if metric == 'iou_2d':  return I_2D / U_2D
-		if metric == 'giou_2d': return I_2D / U_2D - (C_2D - U_2D) / C_2D
+	# Check if boxes are numerically identical (or nearly identical)
+	if np.allclose(boxa_bot, boxb_bot, rtol=1e-5, atol=1e-5):
+		# Boxes are identical in 2D
+		if '2d' in metric:
+			return 1.0  # Perfect overlap in 2D
+		elif '3d' in metric:
+			# Check if heights are also similar
+			if np.isclose(box_a.h, box_b.h, rtol=1e-5, atol=1e-8) and np.isclose(box_a.z, box_b.z, rtol=1e-5, atol=1e-8):
+				return 1.0  # Perfect overlap in 3D
+			else:
+				# Calculate overlap for boxes with same base but different heights
+				overlap_height = compute_height(box_a, box_b)
+				I_3D = box_a.w * box_a.l * overlap_height
+				U_3D = box_a.w * box_a.l * box_a.h + box_b.w * box_b.l * box_b.h - I_3D
+				return I_3D / U_3D if U_3D > 0 else 0.0
+		
+	try:
+		I_2D = compute_inter_2D(boxa_bot, boxb_bot)
+			# only needed for GIoU
+		if 'giou' in metric:
+			C_2D = convex_area(boxa_bot, boxb_bot)
 
-	elif '3d' in metric:		# return 3D IoU/GIoU
-		overlap_height = compute_height(box_a, box_b)
-		I_3D = I_2D * overlap_height	
-		U_3D = box_a.w * box_a.l * box_a.h + box_b.w * box_b.l * box_b.h - I_3D
-		if metric == 'iou_3d':  return I_3D / U_3D
-		if metric == 'giou_3d':
-			union_height = compute_height(box_a, box_b, inter=False)
-			C_3D = C_2D * union_height
-			return I_3D / U_3D - (C_3D - U_3D) / C_3D
-	else:
-		assert False, '%s is not supported' % space
+		if '2d' in metric:		 	# return 2D IoU/GIoU
+			U_2D = box_a.w * box_a.l + box_b.w * box_b.l - I_2D
+			if metric == 'iou_2d':  return I_2D / U_2D
+			if metric == 'giou_2d': return I_2D / U_2D - (C_2D - U_2D) / C_2D
+
+		elif '3d' in metric:		# return 3D IoU/GIoU
+			overlap_height = compute_height(box_a, box_b)
+			I_3D = I_2D * overlap_height	
+			U_3D = box_a.w * box_a.l * box_a.h + box_b.w * box_b.l * box_b.h - I_3D
+			if metric == 'iou_3d':  return I_3D / U_3D
+			if metric == 'giou_3d':
+				union_height = compute_height(box_a, box_b, inter=False)
+				C_3D = C_2D * union_height
+				return I_3D / U_3D - (C_3D - U_3D) / C_3D
+		else:
+			assert False, '%s is not supported' % space
+	
+	except Exception as e:
+		# Catch all other errors that might occur
+		print(f"***********************Warning: Error in IOU calculation: {e} : {boxa_bot, boxb_bot}**************************************")
+		return 0.0  # Return 0 for no overlap if there's an error
+
 
 def dist_ground(bbox1, bbox2):
 	# Compute distance of bottom center in 3D space, NOT considering the difference in height

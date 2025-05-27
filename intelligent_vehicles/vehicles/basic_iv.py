@@ -7,6 +7,7 @@ Created on Mon Jul  8 14:11:22 2024
 """
 
 import torch
+import os
 import numpy as np
 import logging
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ class BasicIntelligentVehicle:
         # Check if it's time for observation
         if abs(t - self.next_observation_time) <= self.delta:
             self.next_observation_time += 1.0 / self.fps
-            frame_data = self.test_loader.get_frame_data(t)
+            frame_data,frame_id = self.test_loader.get_frame_data(t)
             if frame_data == None:
                 logger.info(f"Vehicle {self.name} left the scene.")
                 self.next_observation_time = self.starting_time
@@ -120,8 +121,3 @@ class BasicIntelligentVehicle:
             #    self.last_prediction_time = t
             
             return (tracklets, detections, frame_data["lidar"], ego_state, calibration)
-        
-        
-        
-
-            

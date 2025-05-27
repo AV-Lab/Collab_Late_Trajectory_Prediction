@@ -12,19 +12,22 @@ def compute_affinity(dets, trks, metric, trk_inv_inn_matrices=None):
 		for t, trk in enumerate(trks):
 
 			# get bbox of tracklet from kalman filter
-			kf_tmp = trk.kf	
-			det_trk = Box3D.array2bbox(kf_tmp.x.reshape((-1))[:7])
+			if isinstance(trk, Box3D):
+    			# trk is a Box3D object
+				trk_class = trk.obj_class # trk.obj_class
+				det_trk = trk
+			else:
+				kf_tmp = trk.kf	
+				det_trk = Box3D.array2bbox(kf_tmp.x.reshape((-1))[:7])
+				trk_class = trk.category # trk.obj_class
 
-			# # bbox from detector
-			# bbox_det = Box3D.array2bbox(det[:7])
-			
 			# Check if classes match (if class attributes are found)
 			det_class = det.obj_class # det.obj_class
-			trk_class = trk.category # trk.obj_class
+
 			if det_class != trk_class:
 					aff_matrix[d, t] = -float('inf')  # Very low affinity for mismatched classes
 					continue
-
+		
 			# choose to use different distance metrics
 			if 'iou' in metric:    	  dist_now = iou(det, det_trk, metric)            
 			elif metric == 'm_dis':   dist_now = -m_distance(det, det_trk, trk_inv_inn_matrices[t])

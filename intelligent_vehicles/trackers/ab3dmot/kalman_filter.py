@@ -3,10 +3,7 @@ from intelligent_vehicles.trackers.ab3dmot.box import Box3D
 from filterpy.kalman import KalmanFilter, UnscentedKalmanFilter, MerweScaledSigmaPoints
 
 
-#confidence estimation algorithm 
-
-
-
+# confidence estimation algorithm 
 
 class Filter(object):
 	def __init__(self, bbox3D, label, ID, confidence):
@@ -74,12 +71,12 @@ class KF(Filter):
 	
 	def get_3dbbox(self):
 		# return the 3D bbox in the state
-		tracked_bbox = Box3D()		
+		tracked_bbox = Box3D()
 		tracked_bbox.x, tracked_bbox.y, tracked_bbox.z, tracked_bbox.ry, tracked_bbox.l, tracked_bbox.w, tracked_bbox.h = self.kf.x[:7].reshape((7, ))
 		tracked_bbox.s = self.confidence
 		tracked_bbox.obj_class = self.category
 
-		bbox = Box3D.bbox2array_raw(tracked_bbox)
+		bbox = Box3D.bbox2array_raw(tracked_bbox) #[bbox.h, bbox.w, bbox.l, bbox.x, bbox.y, bbox.z, bbox.ry]
 		
 	
 		return bbox
