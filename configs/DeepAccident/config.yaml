@@ -1,6 +1,6 @@
 dataset:
   name: "DeepAccident"
-  path: "data/DeepAccident"
+  path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/DeepAccident"
   prefixes:
     # - "train"
     - "valid"
@@ -10,24 +10,25 @@ ego_vehicle:
   type: "basic"  # [basic, aggregating, broadcasting, hybrid]
   parameters:
     fps: 20 #frames per second
+    tracking_history: 20 # bbox to save 
     prediction_horizon: 2 # seconds
     prediction_frequency: 5 
     forecasting_frequency: 10
+    device: "cuda" # options [cuda, cpu, cuda:1]
 
   detector:
     name: "gt"    # [gt, centerpoint]
-    mode: "eval"           # train => save checkpoint, eval => load checkpoint
-    checkpoint: "/path/to/centerpoint_eval.ckpt"
+    checkpoint: ""
 
   tracker:
-    class: "AB3DMOT"
+    name: "gt" #["gt", "ab3dmot"]
     # No mode or checkpoint needed, as it's algorithmic
 
   predictor:
     name: "lstm"   # [lstm, gcn, gat, gcn_temporal, gat_temporal, transformer, transformer_gnn]
-    mode: "eval"  
+    mode: "train" #["train"] 
     checkpoint: "/path/to/lstm_eval.ckpt"
-    # No 'parameters' block here; we moved those fields to vehicle-level parameters
+    data_path: ""
 
   broadcaster:
     broadcasting_frequency: 10
@@ -43,16 +44,17 @@ vehicles:
     type: "basic"
     parameters:
       fps: 20
+      tracking_history: 20 # bbox to save 
       prediction_horizon: 2
       prediction_frequency: 5
       forecasting_frequency: 10
 
     detector:
-      name: "gt"   # could be ground-truth
-      # no mode/checkpoint needed if just 'gt'
+      name: "gt"    # [gt, centerpoint]
+      checkpoint: ""
 
     tracker:
-      class: "AB3DMOT"
+      name: "ab3dmot"
 
     predictor:
       name: "gat_temporal"
@@ -71,17 +73,17 @@ vehicles:
     type: "basic"
     parameters:
       fps: 10
+      tracking_history: 20 # bbox to save 
       prediction_horizon: 2
       prediction_frequency: 5
       forecasting_frequency: 10
 
     detector:
-      name: "gt"
-      mode: "eval"
-      checkpoint: "/path/to/pointpillars_eval.ckpt"
+      name: "gt"    # [gt, centerpoint]
+      checkpoint: ""
 
     tracker:
-      class: "AB3DMOT"
+      name: "ab3dmot"
 
     predictor:
       name: "transformer"
@@ -100,17 +102,17 @@ vehicles:
     type: "basic"
     parameters:
       fps: 10
+      tracking_history: 20 # bbox to save 
       prediction_horizon: 2
       prediction_frequency: 5
       forecasting_frequency: 10
 
     detector:
-      name: "gt"
-      mode: "eval"
-      checkpoint: "/path/to/centerpoint_train.ckpt"
+      name: "gt"    # [gt, centerpoint]
+      checkpoint: ""
 
     tracker:
-      class: "AB3DMOT"
+      name: "ab3dmot"
 
     predictor:
       name: "transformer_gnn"

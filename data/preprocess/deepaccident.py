@@ -59,10 +59,10 @@ def parse_label_file(label_path):
                 'x': float(data[1]),
                 'y': float(data[2]),
                 'z': float(data[3]),
-                'width': float(data[4]),
-                'height': float(data[5]),
-                'length': float(data[6]),
-                'yaw': float(data[7]) + np.pi/2,
+                'length': float(data[4]),
+                'width': float(data[5]),
+                'height': float(data[6]),
+                'yaw': float(data[7]),
                 'vel_x': float(data[8]),
                 'vel_y': float(data[9]),
                 'obj_id': int(data[10])
@@ -185,7 +185,7 @@ def preprocess_dataset(dataset_dir, prefix="train"):
     print(f"Saved dataset to {output_pickle_path}")
     
 if __name__ == '__main__':
-    data_folder = 'DeepAccident'
+    data_folder = '/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/DeepAccident'
     print(f"Preprocessing train dataset...{data_folder}")
     # preprocess_dataset(data_folder, prefix="train")
     preprocess_dataset(data_folder, prefix="valid")

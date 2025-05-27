@@ -16,6 +16,7 @@ class Filter(object):
 		self.category = label
 		self.confidence = confidence
 		self.initial_pos = bbox3D
+        
 
 class KF(Filter):
 	def __init__(self, bbox3D,  ID,score,label):

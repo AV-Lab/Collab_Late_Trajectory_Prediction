@@ -16,6 +16,7 @@ from intelligent_vehicles.initialize import (initialize_vehicle,
                                             initialize_vehicles)
 
 from visualization.bbox_visualize import BBoxVisualizer
+from visualization.tracker_visualize import TrackerVisualizer
 import time                    
 import numpy as np
 
@@ -64,7 +65,7 @@ if __name__ == '__main__':
     configuration = parse_configuration(config_path)
     logger.info("Config parsed successfully")
     
-    ego_vehicle, vehicles = initialize_vehicles(configuration['data'], configuration["ego_vehicle"], configuration["vehicles"])
+    ego_vehicle, vehicles = initialize_vehicles(configuration['data'], configuration["ego_vehicle"], configuration["vehicles"])    
     
     scenarios = ego_vehicle.test_loader.extract_all_scenarios()
     print(f"scenarios ready")
@@ -72,7 +73,8 @@ if __name__ == '__main__':
     simulation_time = 10.0  # total sim time in seconds
     dt = 0.01               # step in seconds
 
-    # visualizer = BBoxVisualizer()
+    #visualizer = BBoxVisualizer()
+    visualizer = TrackerVisualizer()
      
     for scenario in scenarios:
         # first preload all data for scenario
@@ -85,12 +87,11 @@ if __name__ == '__main__':
         t_global = 0.0
         # run global_clock
         while t_global < simulation_time:
-            response = ego_vehicle.run(t_global)
+            response = ego_vehicle.run(t_global, scenario)
             if response is not None:
-                detections, point_cloud, ego_pose = response
-
-                # print(f"ego vehicle detections {detections} at ego_pose {ego_pose}")
-                # visualizer.visualize(point_cloud, detections, ego_pose)
+                tracklets, detections, point_cloud, ego_pose, calibration = response
+                #visualizer.visualize(point_cloud, detections, ego_pose)
+                visualizer.visualize_tracks(point_cloud, tracklets, ego_pose, calibration, transform_to_global=True)
                 time.sleep(0.1)
             #for iv in vehicles:
             #    iv.run(t_global)

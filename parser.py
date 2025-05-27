@@ -4,11 +4,11 @@ import logging
 import sys
 
 
-VALID_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
-VALID_DETECTORS = {"gt", "centerpoint", "pointpillars"}
-VALID_PREDICTORS = {"lstm", "gcn", "gat", "gcn_temporal", "gat_temporal", "transformer", "transformer_gnn"}
+SUPPORTED_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
+SUPPORTED_DETECTORS = {"gt", "centerpoint"}
+SUPPORTED_PREDICTORS = {"lstm", "gcn", "gat", "gcn_temporal", "gat_temporal", "transformer", "transformer_gnn"}
+SUPPORTED_TRACKERS = {"gt", "ab3dmot"}
 VALID_MODES = {"train", "eval"}
-VALID_FPS = [10, 20]
 
 
 def load_config(yaml_path: str) -> dict:
@@ -46,10 +46,10 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
         raise ValueError(msg)
 
     vehicle_type = vehicle_dict["type"]
-    if vehicle_type not in VALID_VEHICLE_TYPES:
+    if vehicle_type not in SUPPORTED_VEHICLE_TYPES:
         msg = (
             f"Vehicle '{vehicle_key}' has invalid type '{vehicle_type}'. "
-            f"Must be one of {VALID_VEHICLE_TYPES}."
+            f"Must be one of {SUPPORTED_VEHICLE_TYPES}."
         )
         logger.error(msg)
         raise ValueError(msg)
@@ -65,6 +65,9 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
             msg = f"Vehicle '{vehicle_key}' of type '{vehicle_type}' must define '{module}'"
             logger.error(msg)
             raise ValueError(msg)
+            
+            
+#_________________________________________________________________________________________________
 
     # Validate 'parameters' block at vehicle level
     if "parameters" not in vehicle_dict:
@@ -81,12 +84,14 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
             raise ValueError(msg)
 
     # Optionally check valid FPS
-    if params["fps"] not in VALID_FPS:
+    if params["fps"] <= 0:
         msg = (
-            f"Vehicle '{vehicle_key}' has fps '{params['fps']}' not in {VALID_FPS}."
+            f"Vehicle '{vehicle_key}' has negative fps '{params['fps']}'."
         )
         logger.error(msg)
         raise ValueError(msg)
+        
+#_________________________________________________________________________________________________
 
     # Validate 'detector'
     detector = vehicle_dict["detector"]
@@ -96,44 +101,41 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
             logger.error(msg)
             raise ValueError(msg)
         det_name = detector["name"]
-        if det_name not in VALID_DETECTORS:
+        if det_name not in SUPPORTED_DETECTORS:
             msg = (
-                f"Vehicle '{vehicle_key}' detector.name='{det_name}' not in {VALID_DETECTORS}."
+                f"Vehicle '{vehicle_key}' detector.name='{det_name}' not in {SUPPORTED_DETECTORS}."
             )
             logger.error(msg)
             raise ValueError(msg)
-
-        if "mode" in detector:
-            if detector["mode"] not in VALID_MODES:
-                msg = (
-                    f"Vehicle '{vehicle_key}' detector.mode='{detector['mode']}' invalid. "
-                    f"Must be one of {VALID_MODES}."
-                )
-                logger.error(msg)
-                raise ValueError(msg)
-
+            
+        # for detector you either need to provide detection and load them in wrapper
+        # or you provide a checkpoint and in wrapper load from it
+        # only if detector is gt, the checkpoint field can be omitted 
+        if det_name != "gt" and "checkpoint" not in detector:
+            msg = f"Vehicle '{vehicle_key}' detector, you must provide checkpoint or detections folder path)."
+            logger.error(msg)
+            raise ValueError(msg)   
     else:
-        # If it's just a string
-        det_name = detector
-        if det_name not in VALID_DETECTORS:
-            msg = (
-                f"Vehicle '{vehicle_key}' detector='{det_name}' not in {VALID_DETECTORS}."
-            )
-            logger.error(msg)
-            raise ValueError(msg)
-        # Convert to dict for consistency
-        vehicle_dict["detector"] = {"name": det_name}
+        msg = f"Vehicle '{vehicle_key}' detector must be a dictionary."
+        logger.error(msg)
+        raise ValueError(msg)
+
+
+#_________________________________________________________________________________________________
+
 
     # Validate 'tracker'
     tracker = vehicle_dict["tracker"]
     if isinstance(tracker, dict):
-        if "class" not in tracker:
-            msg = f"Vehicle '{vehicle_key}' tracker is missing 'class' field."
+        if "name" not in tracker:
+            msg = f"Vehicle '{vehicle_key}' tracker is missing 'name' field."
             logger.error(msg)
             raise ValueError(msg)
-        if tracker["class"] != "AB3DMOT":
+        tracker_name = tracker["name"]
+        if tracker_name not in SUPPORTED_TRACKERS:
             msg = (
-                f"Vehicle '{vehicle_key}' tracker class must be 'AB3DMOT', got '{tracker['class']}'"
+                f"Vehicle '{vehicle_key}' tracker.name='{tracker_name}' invalid. "
+                f"Must be one of {SUPPORTED_TRACKERS}."
             )
             logger.error(msg)
             raise ValueError(msg)
@@ -141,6 +143,9 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
         msg = f"Vehicle '{vehicle_key}' tracker must be a dictionary."
         logger.error(msg)
         raise ValueError(msg)
+        
+#_________________________________________________________________________________________________
+
 
     # Validate 'predictor'
     predictor = vehicle_dict["predictor"]
@@ -150,10 +155,10 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
             logger.error(msg)
             raise ValueError(msg)
         pred_name = predictor["name"]
-        if pred_name not in VALID_PREDICTORS:
+        if pred_name not in SUPPORTED_PREDICTORS:
             msg = (
                 f"Vehicle '{vehicle_key}' predictor.name='{pred_name}' invalid. "
-                f"Must be one of {VALID_PREDICTORS}."
+                f"Must be one of {SUPPORTED_PREDICTORS}."
             )
             logger.error(msg)
             raise ValueError(msg)
@@ -169,12 +174,22 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
             )
             logger.error(msg)
             raise ValueError(msg)
-        # 'checkpoint' is optional, but you can enforce or not
-        # e.g. if predictor["mode"] == "train" => must have checkpoint, etc.
+        if predictor["mode"] == "eval":
+            if "checkpoint" not in predictor:
+                msg = f"Vehicle '{vehicle_key}' predictor is in eval mode, you must provide checkpoint)."
+                logger.error(msg)
+                raise ValueError(msg)
+        if predictor["mode"] == "train":
+            if "data_path" not in predictor:
+                msg = f"Vehicle '{vehicle_key}' predictor is in train mode, you must provide data path to run training)."
+                logger.error(msg)
+                raise ValueError(msg)
     else:
         msg = f"Vehicle '{vehicle_key}' predictor must be a dictionary."
         logger.error(msg)
         raise ValueError(msg)
+
+#_________________________________________________________________________________________________
 
     # Validate 'broadcaster' if must_have_broadcaster
     if must_have_broadcaster:
@@ -191,6 +206,9 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
             msg = f"Vehicle '{vehicle_key}' broadcaster missing 'broadcasting_range'."
             logger.error(msg)
             raise ValueError(msg)
+            
+#_________________________________________________________________________________________________
+
 
     # Validate 'sensors'
     if "sensors" not in vehicle_dict:
@@ -235,6 +253,8 @@ def parse_deepaccident_config(config: dict, logger: logging.Logger) -> dict:
     for prefix in prefixes:
         prefix_path = os.path.join(dataset_path, prefix)
         pickle_file = os.path.join(prefix_path, f"{prefix}_data.pkl")
+        
+        print(pickle_file)
         if os.path.isfile(pickle_file):
             data[prefix] = pickle_file
         else:
