@@ -12,12 +12,22 @@ class Box3D:
         self.l = l      # length
         self.ry = ry    # orientation
         self.s = s      # detection score
-        self.obj_class = None  # object class 
+        self.obj_class = obj_class  # object class 
         self.corners_3d_cam = None
+
+        # Optional fields -> used during eval
+        self.obj_id = None
 
     def __str__(self):
         return 'x: {}, y: {}, z: {}, heading: {}, length: {}, width: {}, height: {}, score: {}'.format(
             self.x, self.y, self.z, self.ry, self.l, self.w, self.h, self.s)
+    
+    def get_box3d(self):
+        return np.array([self.x, self.y, self.z, self.ry, self.l, self.w, self.h, self.s,self.obj_class])
+    
+    @classmethod
+    def to_array(cls, bbox):
+        return np.array([bbox.x, bbox.y, bbox.z, bbox.l, bbox.w, bbox.h, bbox.ry])
     
     @classmethod
     def bbox2dict(cls, bbox):
@@ -27,11 +37,8 @@ class Box3D:
     
     @classmethod
     def bbox2array(cls, bbox):
-        # if bbox.s is None:
         return np.array([bbox.x, bbox.y, bbox.z, bbox.ry, bbox.l, bbox.w, bbox.h])
-        # else:
-        #     return np.array([bbox.x, bbox.y, bbox.z, bbox.ry, bbox.l, bbox.w, bbox.h])
-
+    
     @classmethod
     def bbox2array_raw(cls, bbox):
         if bbox.s is None:
@@ -139,5 +146,4 @@ class Box3D:
         bbox.corners_3d_cam = corners_3d
 
         return corners_3d
-    
     

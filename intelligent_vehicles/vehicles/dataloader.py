@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 import logging
 
+from collections import namedtuple
+position = namedtuple('Position', ['x', 'y', 'z','yaw'])
 
 class TrajDataloader:
     """
@@ -114,32 +116,23 @@ class TrajDataloader:
                     trajectories[obj_id] = []
                 trajectories[obj_id].append((t, label))
     
-        # For each timestamp, store past, current (with bbox), future
+        # For each timestamp, store past, current, future
         for t in self.timestamps:
             frame_traj = {}
             for obj_id, entries in trajectories.items():
-                past = [s for (ts, s) in entries if ts < t]
-                future = [s for (ts, s) in entries if ts > t]
-                current = None
-                bbox = None
+                past = [position(s['x'], s['y'], s['z'], s['yaw']) for (ts, s) in entries if ts < t]
+                future = [position(s['x'], s['y'], s['z'], s['yaw']) for (ts, s) in entries if ts > t]
+                current_state = None
     
                 for (ts, s) in entries:
                     if abs(ts - t) < 1e-3:
-                        current = s
-                        bbox = {
-                            'width': s['width'],
-                            'height': s['height'],
-                            'length': s['length'],
-                            'position': (s['x'], s['y'], s['z']),
-                            'yaw': s['yaw']
-                        }
+                        current_state = np.array(list(s.values())[1:8])
                         break
     
-                if current is not None:
+                if current_state is not None:
                     frame_traj[obj_id] = {
                         'past': past,
-                        'current': current,
-                        'bbox': bbox,
+                        'current_state': current_state,
                         'future': future
                     }
     
@@ -159,7 +152,7 @@ class TrajDataloader:
             self.current_frame += 1
             # print(f"timestamp : {t} timestamp_frame: {t_frame}")
             print(f"--------- timestamp : {t_frame}")
-            return self.loaded_frames[t_frame],self.current_frame 
+            return self.loaded_frames[t_frame]
 
     def __iter__(self):
         pass

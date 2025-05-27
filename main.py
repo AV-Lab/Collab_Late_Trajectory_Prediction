@@ -78,9 +78,11 @@ if __name__ == '__main__':
      
     for scenario in scenarios:
         # first preload all data for scenario
+        ego_vehicle.reset()
         ego_vehicle.test_loader.preload_data(scenario)
         logger.info(f"For {ego_vehicle.name} scnerio {scenario} is loaded")
         for iv in vehicles:
+            iv.reset()
             iv.test_loader.preload_data(scenario) 
             logger.info(f"For {iv.name} scnerio {scenario} is loaded")
         

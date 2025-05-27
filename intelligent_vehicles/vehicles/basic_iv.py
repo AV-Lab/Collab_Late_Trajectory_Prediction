@@ -34,15 +34,15 @@ class BasicIntelligentVehicle:
         return TrajDataloader(data_file, sensors, fps)
 
     def _init_detector(self, detector_config):
-        print(f"Initializing tracker with config: {detector_config}")
+        print(f"Initializing detector with config: {detector_config}")
         self.detector = initialize_detector(detector_config)
 
     def _init_tracker(self, tracker_config):
         print(f"Initializing tracker with config: {tracker_config}")
         self.tracker = initialize_tracker(tracker_config)
 
-    def _init_predictor(self, predictor_config, prediction_horizon, forecasting_frequency):
-        print(f"Initializing tracker with config: {predictor_config}")
+    def _init_predictor(self, predictor_config):
+        print(f"Initializing predictor with config: {predictor_config}")
         self.predictor = initialize_predictor(predictor_config)
     
     def run_detector(self, frame_data, scenario=None):
@@ -59,6 +59,39 @@ class BasicIntelligentVehicle:
     
     def run_predictor(self, tracklets):
         pass
+    
+    def reset(self):
+        self.tracker.reset()
+        
+    
+    def ego_motion_compensation(self, detections, calibration):
+        """
+        Convert LiDAR-frame boxes to world frame (position + yaw).
+        """
+    
+        T_lw = calibration["ego_to_world"] @ calibration["lidar_to_ego"]  # 4×4
+        R_lw = T_lw[:3, :3]
+    
+        # ego heading = yaw of LiDAR X-axis in world frame
+        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   # atan2(y,x)
+    
+        compensated = []
+        for det in detections:
+            # ----- position
+            pos_lidar = np.array([det["x"], det["y"], det["z"], 1.0])
+            pos_world = T_lw @ pos_lidar
+    
+            # ----- yaw  (add headings, then wrap)
+            yaw_world = det["yaw"] + ego_heading
+            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap to (-π,π]
+    
+            new_det = det.copy()
+            new_det["x"], new_det["y"], new_det["z"] = pos_world[:3]
+            new_det["yaw"] = yaw_world
+            compensated.append(new_det)
+    
+        return compensated
+
             
     def __init__(self, name, detector_config, tracker_config, predictor_config, parameters, sensors, data):
     
@@ -100,7 +133,7 @@ class BasicIntelligentVehicle:
         # Check if it's time for observation
         if abs(t - self.next_observation_time) <= self.delta:
             self.next_observation_time += 1.0 / self.fps
-            frame_data,frame_id = self.test_loader.get_frame_data(t)
+            frame_data = self.test_loader.get_frame_data(t)
             if frame_data == None:
                 logger.info(f"Vehicle {self.name} left the scene.")
                 self.next_observation_time = self.starting_time
@@ -108,9 +141,11 @@ class BasicIntelligentVehicle:
             # if we recived observation 
             ego_state = frame_data["ego_state"]
             calibration = frame_data["calibration"]
+            point_cloud = frame_data["lidar"]
             
             # Run detection
             detections = self.run_detector(frame_data, scenario)
+            detections = self.ego_motion_compensation(detections, calibration)
         
             # Update the tracker -> tracklets is numpy str array of 3D boxes [x, y, z, theta, l, w, h,s, obj_class]
             tracklets = self.run_tracker(detections, ego_state, calibration)
@@ -120,4 +155,4 @@ class BasicIntelligentVehicle:
             #    predictions = self.run_predictor(tracklets)
             #    self.last_prediction_time = t
             
-            return (tracklets, detections, frame_data["lidar"], ego_state, calibration)
+            return (tracklets, detections, point_cloud, ego_state, calibration)

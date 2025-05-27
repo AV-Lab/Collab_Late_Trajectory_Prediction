@@ -42,57 +42,16 @@ class GTWrapper:
             return theta + 2 * np.pi
         return theta
 
-    def ego_motion_compensation(self, detections, calibration):
-        """
-        Convert LiDAR-frame boxes to world frame (position + yaw).
-        """
-    
-        T_lw = calibration["ego_to_world"] @ calibration["lidar_to_ego"]  # 4×4
-        R_lw = T_lw[:3, :3]
-    
-        # ego heading = yaw of LiDAR X-axis in world frame
-        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   # atan2(y,x)
-    
-        compensated = []
-        for det in detections:
-            # ----- position
-            pos_lidar = np.array([det["x"], det["y"], det["z"], 1.0])
-            pos_world = T_lw @ pos_lidar
-    
-            # ----- yaw  (add headings, then wrap)
-            yaw_world = det["yaw"] + ego_heading
-            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap to (-π,π]
-    
-            new_det = det.copy()
-            new_det["x"], new_det["y"], new_det["z"] = pos_world[:3]
-            new_det["yaw"] = yaw_world
-            compensated.append(new_det)
-    
-        return compensated
-
-
     def track(self, detections, ego_pose, calibartion):            
-        transformed_detections = self.ego_motion_compensation(detections, calibartion)
-        
-        #transformed_detections = detections
-        
-        print("Detections:.........................................................................")
-        for d in transformed_detections:
-            print(d)
-        
         unmatched_detections = []
         matched_track_ids = []
         
 
-        for d in transformed_detections:
+        for d in detections:
             matched = False
             for tr in self.active_tracklets:
                 if d['obj_id'] == tr.id:
-                    print("TRacklet before update")
-                    print(tr)
                     tr.update(d)
-                    print("TRacklet after update")
-                    print(tr)
                     matched = True
                     matched_track_ids.append(tr.id)
                     break
@@ -108,8 +67,6 @@ class GTWrapper:
         for d in unmatched_detections:
             self.active_tracklets.append(self.Track(self.history_len, d))
             
-            
-        print("DONE tracking ................................................................................................................. \n\n\n\n\n")
 
     def get_tracked_objects(self):
         tracklets = [{'id' : tr.id, 'category' : tr.category, 'condifence' : tr.confidence,  
@@ -119,7 +76,9 @@ class GTWrapper:
         #print(tracklets)
         return tracklets 
     
-
+    def reset(self):
+        pass 
+    
     class Track:
         def __init__(self, len_history, detection):
             self.history = Queue(maxsize=len_history)

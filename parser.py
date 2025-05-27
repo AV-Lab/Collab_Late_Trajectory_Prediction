@@ -76,7 +76,7 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
         raise ValueError(msg)
 
     params = vehicle_dict["parameters"]
-    needed_params = ["fps", "prediction_horizon", "prediction_frequency", "forecasting_frequency"]
+    needed_params = ["fps", "prediction_horizon", "prediction_frequency", "forecasting_frequency", "device"]
     for p in needed_params:
         if p not in params:
             msg = f"Vehicle '{vehicle_key}' parameters is missing '{p}'."
@@ -182,6 +182,10 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, logger: loggin
         if predictor["mode"] == "train":
             if "data_path" not in predictor:
                 msg = f"Vehicle '{vehicle_key}' predictor is in train mode, you must provide data path to run training)."
+                logger.error(msg)
+                raise ValueError(msg)
+            if "save_path" not in predictor:
+                msg = f"Vehicle '{vehicle_key}' predictor is in train mode, you must provide save path where to train the checkpoint)."
                 logger.error(msg)
                 raise ValueError(msg)
     else:
