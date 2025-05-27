@@ -31,7 +31,7 @@ class AB3DMOT(object):
 
         # # tracker parameters per category
         self.params = {
-            'car':         {'thres': 0.40, 'low_thres': 0.30, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
+            'car':         {'thres': 0.30, 'low_thres': 0.28, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
             'pedestrian':  {'thres': 0.50, 'low_thres': 0.30, 'min_hits': 1, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
             'cyclist':     {'thres': 0.60, 'low_thres': 0.20, 'min_hits': 3, 'max_age': 4, 'max_sim': 1.0, 'min_sim': 0.0},
             'bus':         {'thres': 0.30, 'low_thres': 0.25, 'min_hits': 2, 'max_age': 3, 'max_sim': 1.0, 'min_sim': 0.0},
@@ -77,69 +77,104 @@ class AB3DMOT(object):
         return trks
 
 
-    def ego_motion_compensation(self,detections):
-        """
-        Transform 3D bounding boxes from LiDAR frame to world coordinates.
+    # def ego_motion_compensation(self,detections):
+    #     """
+    #     Transform 3D bounding boxes from LiDAR frame to world coordinates.
         
-        Args:
-            detections: List of Box3D objects in LiDAR frame
-            calibration: Dictionary with calibration matrices
+    #     Args:
+    #         detections: List of Box3D objects in LiDAR frame
+    #         calibration: Dictionary with calibration matrices
             
-        Returns:
-            List of Box3D objects with world coordinate positions
-        """
-        # Get transformation matrices
-        lidar_to_ego = self.calibration['lidar_to_ego']
-        ego_to_world = self.calibration['ego_to_world']
+    #     Returns:
+    #         List of Box3D objects with world coordinate positions
+    #     """
+    #     # Get transformation matrices
+    #     lidar_to_ego = self.calibration['lidar_to_ego']
+    #     ego_to_world = self.calibration['ego_to_world']
         
-        # Combine to get direct lidar-to-world transformation
-        lidar_to_world = np.matmul(ego_to_world, lidar_to_ego)
+    #     # Combine to get direct lidar-to-world transformation
+    #     lidar_to_world = np.matmul(ego_to_world, lidar_to_ego)
         
-        compensated_detections = []
+    #     compensated_detections = []
         
-        for bbox in detections:
-            # Create a new Box3D object to avoid modifying the original
-            new_bbox = Box3D(
-                h=bbox.h,
-                w=bbox.w,
-                l=bbox.l,
-                s=bbox.s,
-                obj_class=bbox.obj_class
-            )
+    #     for bbox in detections:
+    #         # Create a new Box3D object to avoid modifying the original
+    #         new_bbox = Box3D(
+    #             h=bbox.h,
+    #             w=bbox.w,
+    #             l=bbox.l,
+    #             s=bbox.s,
+    #             obj_class=bbox.obj_class
+    #         )
             
-            # print(f"Before compensation bbox {bbox.x} {bbox.y} {bbox.z} {bbox.ry} {bbox.l} {bbox.w} {bbox.h}")
-            # Extract position
-            pos_lidar = np.array([bbox.x, bbox.y, bbox.z, 1.0])
+    #         # print(f"Before compensation bbox {bbox.x} {bbox.y} {bbox.z} {bbox.ry} {bbox.l} {bbox.w} {bbox.h}")
+    #         # Extract position
+    #         pos_lidar = np.array([bbox.x, bbox.y, bbox.z, 1.0])
             
-            # Transform position to world coordinates
-            pos_world = np.matmul(lidar_to_world, pos_lidar)
+    #         # Transform position to world coordinates
+    #         pos_world = np.matmul(lidar_to_world, pos_lidar)
             
-            # Set the world coordinates
-            new_bbox.x, new_bbox.y, new_bbox.z = pos_world[:3]
+    #         # Set the world coordinates
+    #         new_bbox.x, new_bbox.y, new_bbox.z = pos_world[:3]
             
-            # Handle rotation transformation
-            # Extract rotation part of the transformation matrix
-            R_lidar_to_world = lidar_to_world[:3, :3]
+    #         # Handle rotation transformation
+    #         # Extract rotation part of the transformation matrix
+    #         R_lidar_to_world = lidar_to_world[:3, :3]
             
-            # Create rotation matrix for the original orientation in lidar frame
-            R_obj_lidar = Box3D.roty(bbox.ry)
+    #         # Create rotation matrix for the original orientation in lidar frame
+    #         R_obj_lidar = Box3D.roty(bbox.ry)
             
-            # Combine rotations to get object orientation in world frame
-            R_obj_world = np.matmul(R_lidar_to_world, R_obj_lidar)
+    #         # Combine rotations to get object orientation in world frame
+    #         R_obj_world = np.matmul(R_lidar_to_world, R_obj_lidar)
             
-            # Extract the new heading angle in world frame (ry)
-            # For a rotation matrix [ [cos(θ), 0, sin(θ)], [0, 1, 0], [-sin(θ), 0, cos(θ)] ]
-            # We can extract θ as arctan2(r[0,2], r[0,0])
-            new_bbox.ry = np.arctan2(R_obj_world[0, 2], R_obj_world[0, 0])
+    #         # Extract the new heading angle in world frame (ry)
+    #         # For a rotation matrix [ [cos(θ), 0, sin(θ)], [0, 1, 0], [-sin(θ), 0, cos(θ)] ]
+    #         # We can extract θ as arctan2(r[0,2], r[0,0])
+    #         new_bbox.ry = np.arctan2(R_obj_world[0, 2], R_obj_world[0, 0])
             
-            # Reset corners_3d_cam since we changed the box
-            new_bbox.corners_3d_cam = None
+    #         # Reset corners_3d_cam since we changed the box
+    #         new_bbox.corners_3d_cam = None
             
-            compensated_detections.append(new_bbox)
+    #         compensated_detections.append(new_bbox)
            
         
-        return compensated_detections
+    #     return compensated_detections
+    def ego_motion_compensation(self, detections):
+        """
+        Convert LiDAR-frame boxes to world frame (position + yaw).
+        """
     
+        T_lw = self.calibration["ego_to_world"] @ self.calibration["lidar_to_ego"]  # 4×4
+        R_lw = T_lw[:3, :3]
+    
+        # ego heading = yaw of LiDAR X-axis in world frame
+        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   # atan2(y,x)
+    
+        compensated = []
+        for det in detections:
+            # Create a new Box3D object to avoid modifying the original
+            new_bbox = Box3D(
+                h=det.h,
+                w=det.w,
+                l=det.l,
+                s=det.s,
+                obj_class=det.obj_class
+            )
+            
+            # ----- position
+            pos_lidar = np.array([det.x, det.y, det.z, 1.0])#np.array([det["x"], det["y"], det["z"], 1.0])
+            pos_world = T_lw @ pos_lidar
+    
+            # ----- yaw  (add headings, then wrap)
+            yaw_world = det.ry + ego_heading
+            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap to (-π,π]
+    
+            # Set the world coordinates
+            new_bbox.x, new_bbox.y, new_bbox.z = pos_world[:3]
+            new_bbox.ry = yaw_world
+            compensated.append(new_bbox)
+    
+        return compensated
     def update(self, matched, unmatched_trks, dets):
 
 		# update matched trackers with assigned detections
