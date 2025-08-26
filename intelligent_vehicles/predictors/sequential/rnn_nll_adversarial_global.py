@@ -17,7 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from evaluation.distance_metrics import calculate_ade, calculate_fde
 
 
-class RNNPredictor:
+class RNNPredictorNLL:
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~  sub-blocks  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
     class Encoder(nn.Module):
@@ -33,28 +33,35 @@ class RNNPredictor:
         def __init__(self, in_dim, h_dim, out_dim, n_layers):
             super().__init__()
             self.lstm = nn.LSTM(in_dim, h_dim, n_layers, batch_first=True)
-            self.fc   = nn.Linear(h_dim, out_dim)
-
+            self.fc   = nn.Linear(h_dim, out_dim * 2)          # ← double the channels
+            nn.init.constant_(self.fc.bias[out_dim:], 0.0) 
+    
         def forward(self, x, h, c):
             y, (h, c) = self.lstm(x, (h, c))
-            return self.fc(y), h, c
+            y = self.fc(y)                                     # [B, 1, 2*out_dim]
+            mu, log_var = torch.chunk(y, 2, dim=-1)            # split along feature dim
+            return (mu, log_var), h, c
 
     class Seq2Seq(nn.Module):
         def __init__(self, enc, dec):
             super().__init__()
             self.enc, self.dec = enc, dec
-
+    
         def forward(self, x, horizon):
-            """x: [B, T-1, enc_in_dim]  →  [B, horizon, vel_dim]"""
             B, _, _ = x.size()
             h, c = self.enc(x)
+    
             dec_in = torch.zeros(B, 1, self.dec.lstm.input_size, device=x.device)
-            outs = []
+            mus, log_vars = [], []
+    
             for _ in range(horizon):
-                y, h, c = self.dec(dec_in, h, c)
-                outs.append(y)
-                dec_in = y.detach()
-            return torch.cat(outs, dim=1)
+                (mu, log_var), h, c = self.dec(dec_in, h, c)
+                mus.append(mu)
+                log_vars.append(log_var)
+                dec_in = mu.detach()                           # feed mean back
+    
+            return torch.cat(mus, 1), torch.cat(log_vars, 1)   # [B,H,D] each
+
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~  constructor  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
     def __init__(self, cfg: dict):
@@ -94,7 +101,7 @@ class RNNPredictor:
         self.model = self.Seq2Seq(enc, dec).to(self.device)
 
         #self.criterion = nn.SmoothL1Loss()
-        self.criterion = nn.MSELoss()
+        #self.criterion = nn.MSELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         # ---------- optional checkpoint -------------------------------- #
@@ -112,67 +119,114 @@ class RNNPredictor:
         for t in range(1, T):
             out[:, t] = out[:, t-1] + vel_seq[:, t]
         return out
+    
+    @staticmethod
+    def gaussian_nll(y, mu, log_var, clamp=(-4.5, 4.0)):
+        """ L = 0.5 * (log σ² + (y-μ)² / σ²) [+ 0.5*log(2π)]
+            where σ² = exp(log_var).  log_var is clamped for stability. """
+        log_var = torch.clamp(log_var, *clamp)                # numerical safety
+        inv_var = torch.exp(-log_var)
+        return 0.5 * (log_var + (y - mu)**2 * inv_var)
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~  train  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
     def train(self, train_loader, valid_loader=None, save_path=None):
+        """
+        Mixed-batch FGSM training:
+            • loss_total = ½ (clean NLL + adversarial NLL)
+            • ε comes from cfg[ "epsilon" ]  (default 0.03)
+            • monitors mean / min / max log-variance per epoch
+        """
         print("Train batches:", len(train_loader))
-        
-        best_val = float('inf') 
-        patience_ctr = 0
-        
-        # obs format [x, y, vx, vy, vyaw]
-        
+    
+        eps        = getattr(self, "epsilon", 0.03)            # set in cfg or default
+        best_val   = float("inf")
+        patience_c = 0
+    
         for epoch in range(1, self.num_epochs + 1):
             self.model.train()
             ep_loss = ep_ade = ep_fde = 0.0
-
+            logv_sum = logv_min = logv_max = 0.0
+    
             bar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.num_epochs}", leave=False)
-            
+    
             for cat, obs, tgt in bar:
                 cat, obs, tgt = cat.to(self.device), obs.to(self.device), tgt.to(self.device)
-
-                if obs.dim() == 2:            # batch_size==1 edge-case
+                if obs.dim() == 2:                               # batch_size == 1 edge-case
                     cat, obs, tgt = cat.unsqueeze(0), obs.unsqueeze(0), tgt.unsqueeze(0)
-
-                enc_in = obs[:, :, self.pos_size:self.pos_size+self.input_size]        
-                tgt_v  = tgt[:, :, self.pos_size:self.pos_size+self.output_size]     
-                self.optimizer.zero_grad()                
-                pred_v = self.model(enc_in, tgt_v.size(1))
-                loss = self.criterion(pred_v, tgt_v)
-                loss.backward()
+    
+                # ---------- prepare inputs ----------------------------- #
+                enc_in = obs[:, :, self.pos_size : self.pos_size + self.input_size]
+                tgt_v  = tgt[:, :, self.pos_size : self.pos_size + self.output_size]
+    
+                # ---------------- clean pass (retain graph for grad-x) -- #
+                enc_in.requires_grad_(True)
+                mu, log_var = self.model(enc_in, tgt_v.size(1))
+                loss_clean  = self.gaussian_nll(tgt_v, mu, log_var).mean()
+    
+                # gradient w.r.t. inputs (no param grads yet)
+                grad_x = torch.autograd.grad(
+                    loss_clean, enc_in, retain_graph=True, create_graph=False
+                )[0].detach().sign()
+    
+                # ---------- adversarial input & second forward ---------- #
+                enc_adv = (enc_in + eps * grad_x).detach()
+                mu_adv, log_var_adv = self.model(enc_adv, tgt_v.size(1))
+                loss_adv = self.gaussian_nll(tgt_v, mu_adv, log_var_adv).mean()
+    
+                # ---------------- combined optimisation ---------------- #
+                total_loss = 0.5 * (loss_clean + loss_adv)
+    
+                self.optimizer.zero_grad()
+                total_loss.backward()
                 self.optimizer.step()
-                ep_loss += loss.item()
-
-                # --- ADE/FDE in full pos space ------------------------- #
+    
+                # ---------------- logging & metrics -------------------- #
+                ep_loss += total_loss.item()
+    
                 with torch.no_grad():
                     last_pos = obs[:, -1, self.pos_slice]
-                    pred_pos = self._vel_to_pos(last_pos, pred_v, self.pos_size)
+                    pred_pos = self._vel_to_pos(last_pos, mu, self.pos_size)
                     tgt_pos  = tgt[:, :, self.pos_slice]
                     ade_b = calculate_ade(pred_pos, tgt_pos)
                     fde_b = calculate_fde(pred_pos, tgt_pos)
+    
                     ep_ade += ade_b
                     ep_fde += fde_b
-
-                bar.set_postfix(loss=f"{loss.item():.9f}", ADE=f"{ade_b:.5f}", FDE=f"{fde_b:.5f}")
-
-            print(f"\nEpoch {epoch}: Loss {ep_loss/len(train_loader):.9f}  "
-                  f"ADE {ep_ade/len(train_loader):.5f}  "
-                  f"FDE {ep_fde/len(train_loader):.5f}")
-
+    
+                    # variance stats
+                    logv_sum += log_var.mean().item()
+                    logv_min = min(logv_min, log_var.min().item()) if ep_loss > 0 else log_var.min().item()
+                    logv_max = max(logv_max, log_var.max().item()) if ep_loss > 0 else log_var.max().item()
+    
+                bar.set_postfix(
+                    loss=f"{total_loss.item():.6f}",
+                    ADE=f"{ade_b:.4f}",
+                    FDE=f"{fde_b:.4f}"
+                )
+    
+            n_batches = len(train_loader)
+            print(
+                f"\nEpoch {epoch}: Loss {ep_loss/n_batches:.6f}  "
+                f"ADE {ep_ade/n_batches:.4f}  FDE {ep_fde/n_batches:.4f} | "
+                f"logσ² μ={logv_sum/n_batches:+.3f}  "
+                f"min={logv_min:+.3f}  max={logv_max:+.3f}"
+            )
+    
             # -------------- validation & early stop ------------------- #
             if valid_loader:
                 val_loss = self.validate(valid_loader)
                 if val_loss < best_val:
-                    best_val = val_loss; patience_ctr = 0
+                    best_val = val_loss; patience_c = 0
                     if save_path: self.save_checkpoint(save_path)
                 else:
-                    patience_ctr += 1
-                if patience_ctr >= self.patience:
+                    patience_c += 1
+                if patience_c >= self.patience:
                     print("Early stopping."); break
             elif save_path and epoch == self.num_epochs:
                 self.save_checkpoint(save_path)
-
+    
         self.model_trained = True
+
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~  validate  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
     def validate(self, loader):
@@ -186,35 +240,55 @@ class RNNPredictor:
 
                 enc_in = obs[:, :, self.pos_size:self.pos_size+self.input_size]      
                 tgt_v  = tgt[:, :, self.pos_size:self.pos_size+self.output_size]     
-                pred_v = self.model(enc_in, tgt_v.size(1))
-                loss_sum += self.criterion(pred_v, tgt_v).item()
+                mu, log_var = self.model(enc_in, tgt_v.size(1))
+                loss_sum += self.gaussian_nll(tgt_v, mu, log_var).mean().item()
         val_loss = loss_sum / len(loader)
         print(f"Validation loss: {val_loss:.4f}")
         return val_loss
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~  evaluate  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
     def evaluate(self, loader):
-        self.model.eval(); ade = fde = 0.0
+        """
+        Returns ADE, FDE, MSNE.
+        MSNE = E[ ((y-μ)/σ)² ]  where  σ = exp(½·log_var)
+        Ideal calibration ⇒ MSNE ≈ 1.
+        """
+        self.model.eval()
+        ade = fde = msne_sum = 0.0
+    
         with torch.no_grad():
             for cat, obs, tgt in loader:
                 cat, obs, tgt = cat.to(self.device), obs.to(self.device), tgt.to(self.device)
-                if obs.dim() == 2: 
+    
+                if obs.dim() == 2:                             # batch_size==1 edge-case
                     cat, obs, tgt = cat.unsqueeze(0), obs.unsqueeze(0), tgt.unsqueeze(0)
-
-                enc_in = obs[:, :, self.pos_size:self.pos_size+self.input_size ]        # [B, T-1, enc_in]
-                pred_v = self.model(enc_in, tgt.size(1))
-
+    
+                enc_in = obs[:, :, self.pos_size : self.pos_size + self.input_size]   # [B, T-1, in]
+                tgt_v  = tgt[:, :, self.pos_size : self.pos_size + self.output_size]  # [B, H, out]
+    
+                mu, log_var = self.model(enc_in, tgt_v.size(1))                       # [B, H, out] each
+                sigma = torch.exp(0.5 * log_var)                                      # std
+    
+                # ---------- MSNE --------------------------------------------- #
+                z   = (tgt_v - mu) / sigma
+                msne_sum += z.pow(2).mean().item()
+    
+                # ---------- ADE / FDE ---------------------------------------- #
                 last_pos = obs[:, -1, self.pos_slice]
-                pred_pos = self._vel_to_pos(last_pos, pred_v, self.pos_size)
+                pred_pos = self._vel_to_pos(last_pos, mu, self.pos_size)
                 tgt_pos  = tgt[:, :, self.pos_slice]
-
+    
                 ade += calculate_ade(pred_pos, tgt_pos)
                 fde += calculate_fde(pred_pos, tgt_pos)
+    
+        n_batches = len(loader)
+        ade  /= n_batches
+        fde  /= n_batches
+        msne = msne_sum / n_batches
+    
+        print(f"Test ADE {ade:.5f}  FDE {fde:.5f}  MSNE {msne:.3f}")
+        return ade, fde, msne
 
-        ade /= len(loader)
-        fde /= len(loader)
-        print(f"Test ADE {ade:.5f}  FDE {fde:.5f}")
-        return ade, fde
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~  predict  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
     def predict(self, trajs, prediction_horizon):
@@ -247,7 +321,7 @@ class RNNPredictor:
         enc_in = vel_batch[:, :, :self.input_size ]                                                      # velocities only
 
         with torch.no_grad():
-            pred_v = self.model(enc_in, prediction_horizon)                   # [B, H, output_size]
+            pred_v, _ = self.model(enc_in, prediction_horizon)        # predict()
 
         # ----- integrate velocities back to absolute positions ---------------
         predictions = []

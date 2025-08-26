@@ -17,7 +17,9 @@ from intelligent_vehicles.initialize import (initialize_vehicle,
 
 from visualization.bbox_visualize import BBoxVisualizer
 from visualization.tracker_visualize import TrackerVisualizer
-import time                    
+from visualization.trajectory_visualize import PredictorVisualizer 
+from evaluation.frame_based_metrics import compute_frame_based_performance  
+from evaluation.prediction_evaluation import Evaluator              
 import numpy as np
 
 def parse_configuration(config_path):
@@ -60,21 +62,23 @@ if __name__ == '__main__':
     config_path = "configs/DeepAccident/config.yaml"
     logger = setup_logging("collaboration.log")
 
-    
     logger.info(f"Loading configuration from: {config_path}")
     configuration = parse_configuration(config_path)
     logger.info("Config parsed successfully")
     
-    ego_vehicle, vehicles = initialize_vehicles(configuration['data'], configuration["ego_vehicle"], configuration["vehicles"])    
-    
+    ego_vehicle, vehicles = initialize_vehicles(configuration['data'],
+                                                configuration["ego_vehicle"],
+                                                configuration["vehicles"])  
     scenarios = ego_vehicle.test_loader.extract_all_scenarios()
-    print(f"scenarios ready")
+    print("scenarios ready")
+       
     # global clock 
     simulation_time = 10.0  # total sim time in seconds
-    dt = 0.01               # step in seconds
+    dt = 0.02               # step in seconds
 
+    evaluator = Evaluator(logger=logger)  # NEW
     #visualizer = BBoxVisualizer()
-    visualizer = TrackerVisualizer()
+    #visualizer = PredictorVisualizer()
      
     for scenario in scenarios:
         # first preload all data for scenario
@@ -87,15 +91,27 @@ if __name__ == '__main__':
             logger.info(f"For {iv.name} scnerio {scenario} is loaded")
         
         t_global = 0.0
+        evaluator.begin_scenario()  # NEW
+        
         # run global_clock
         while t_global < simulation_time:
-            response = ego_vehicle.run(t_global, scenario)
-            if response is not None:
-                tracklets, detections, point_cloud, ego_pose, calibration = response
-                #visualizer.visualize(point_cloud, detections, ego_pose)
-                visualizer.visualize_tracks(point_cloud, tracklets, ego_pose, calibration, transform_to_global=True)
-                time.sleep(0.1)
             #for iv in vehicles:
             #    iv.run(t_global)
+            response = ego_vehicle.run(t_global, scenario)
+            if response is not None:
+                predictions, tracklets, trajectories, point_cloud, ego_pose, calibration = response
+                forecasts, metrics, by_cat = compute_frame_based_performance(predictions, tracklets, trajectories, ego_vehicle, use_id=True)
+                evaluator.accumulate(metrics, by_cat)  
+                
+                #visualizer.visualize_predictions(point_cloud, tracklets, predictions, ego_pose, calibration, transform_to_global=True)
+                #point_cloud, detections, ego_pose = response
+                #visualizer.visualize(point_cloud, detections, ego_pose)
+            
             t_global += dt
+            
+        evaluator.end_scenario(scenario)  # NEW
+    
+    evaluator.log_overall(len(scenarios))  # NEW
+    
+    #visualizer.close()
          

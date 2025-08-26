@@ -18,7 +18,7 @@ class TrackerVisualizer(BBoxVisualizer):
     • If transform_to_global is False →  data drawn in LiDAR frame
     """
 
-    def __init__(self, camera_height=60.0, zoom_level=0.15):
+    def __init__(self, camera_height=40.0, zoom_level=0.15):
         super().__init__(camera_height, zoom_level)
         self.trajectory_geometries = []
 

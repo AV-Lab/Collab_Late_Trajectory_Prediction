@@ -30,19 +30,12 @@ logger = logging.getLogger(__name__)
 position = namedtuple('Position', ['x', 'y', 'z','yaw'])
 
 class GTWrapper:
-    def __init__(self, history_len=20):
+    def __init__(self, history_len):
         logger.info("The tracklets are taken from ground truth.")
         self.active_tracklets = []
         self.history_len = history_len
-        
-    def wrap_angle(self, theta):
-        if theta >= np.pi:
-            return theta - 2 * np.pi
-        elif theta < -np.pi:
-            return theta + 2 * np.pi
-        return theta
 
-    def track(self, detections, ego_pose, calibartion):            
+    def track(self, detections):            
         unmatched_detections = []
         matched_track_ids = []
         
@@ -69,7 +62,7 @@ class GTWrapper:
             
 
     def get_tracked_objects(self):
-        tracklets = [{'id' : tr.id, 'category' : tr.category, 'condifence' : tr.confidence,  
+        tracklets = [{'id' : tr.id, 'category' : tr.category, 'confidence' : tr.confidence,  
                  'current_pos' : tr.current_pos.to_array(), 'tracklet' : list(tr.history.queue)}
                 for tr in self.active_tracklets]
         
@@ -83,7 +76,7 @@ class GTWrapper:
         def __init__(self, len_history, detection):
             self.history = Queue(maxsize=len_history)
             self.active = True
-            self.confidence = 1.0
+            self.confidence = 1.0 
             self.category = detection['label']
             self.id = detection['obj_id']
             self.current_pos = GTWrapper.BBox(detection)

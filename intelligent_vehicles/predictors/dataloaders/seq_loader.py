@@ -1,30 +1,49 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SeqDataset that (1) infers dimensionalities, (2) adds velocities only for x-,y-,z-
-coordinates, and (3) guarantees obs / target tensors have equal feature length.
+Created on Sat Jun  7 09:31:28 2025
+
+@author: nadya
+"""
+
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+SeqDataset that
+
+• reads samples in the form
+      {"cat": <str>, "obs": [L, 3], "target": [H, 3]}
+  where pose = [x, y, yaw]
+
+• builds past / future tensors whose *rows* are
+      [x, y, yaw, vx, vy, vxy, vyaw]
+
+• returns **three** tensors per __getitem__:
+      cat_id  – one-hot vector  (shape [6])
+      obs_arr – past trajectory (shape [L,7])
+      tgt_arr – future trajectory(shape [H,7])
+
+Nothing else is touched.
 """
 
 import os
 import pickle
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 
 class SeqDataset(Dataset):
-    def __init__(self, data_file, include_velocity: bool = True):
-        """
-        Args
-        ----
-        data_file : str
-            Path to *.pkl containing a list of samples.
-            Each sample can be either
-                ([obs_seq], [tgt_seq])     # tuple / list
-            or
-                {"obs": [obs_seq], "target": [tgt_seq]}  # dict
-        include_velocity : bool
-            Whether to append (vx, vy, [vz]) to position channels.
-        """
+    # ------------------------------------------------------------------ #
+    _CAT2IDX = {
+        "car": 0, "motorcycle": 1, "pedestrian": 2,
+        "van": 3, "truck": 4, "cyclist": 5
+    }
+    _NUM_CAT = len(_CAT2IDX)
+
+    # ------------------------------------------------------------------ #
+    def __init__(self, data_file: str, include_velocity: bool = True):
         self.include_velocity = include_velocity
 
         if not os.path.isfile(data_file):
@@ -33,77 +52,51 @@ class SeqDataset(Dataset):
         with open(data_file, "rb") as f:
             self.data = pickle.load(f)
 
-        # ---- infer dimensionalities from first sample -----------------
-        first_obs, first_tgt = self._unpack_sample(self.data[0])
-        self.input_dim  = len(first_obs[0])   # 2, 3, or 4
-        self.output_dim = len(first_tgt[0])   # 2 or 3
-        self.pos_dim    = min(self.output_dim, 3)  # dims that get velocity
+        # ---------- infer basic dims from first sample ---------------- #
+        first = self.data[0]
+        self.L = len(first["obs"])
+        self.H = len(first["target"])
 
-        assert self.output_dim <= self.input_dim, (
-            "Output cannot have more positional dims than input")
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _yaw_wrap(delta):
+        """Wrap to (-π, π]."""
+        return (delta + np.pi) % (2 * np.pi) - np.pi
 
-        # ---- compute stats -------------------------------------------
-        self.mean, self.std = self._calculate_statistics()
+    # ------------------------------------------------------------------ #
+    def _build_traj(self, arr):
+        """
+        arr : np.ndarray [T,3]  (x,y,yaw)
+        →     torch.Tensor [T,5] (x,y,vx,vy,vyaw)
+        """
+        pos_xy = arr[:, :2]                          # [T,2]
+        yaw    = arr[:, 2]                           # [T]
 
-    # ------------------------------------------------------------------
-    def _unpack_sample(self, sample):
-        """Return (obs, target) regardless of tuple / dict layout."""
-        if isinstance(sample, dict):
-            return sample["obs"], sample["target"]
-        return sample  # assume (obs, target)
+        # ----- linear velocities on x-y ------------------------------- #
+        vel_xy = pos_xy[1:] - pos_xy[:-1]            # [T-1,2]
+        vel_xy = np.vstack([vel_xy[[0]], vel_xy])    # keep length T
 
-    # ------------------------------------------------------------------
-    def _add_velocity(self, seq_tensor):
-        """Append vx,vy(,vz) computed on the first `pos_dim` columns."""
-        vel = seq_tensor[1:, :self.pos_dim] - seq_tensor[:-1, :self.pos_dim]
-        vel = torch.cat([vel[[0]], vel], dim=0)                   # keep length
-        return torch.cat([seq_tensor, vel], dim=1)                # [T, D+pos]
+        # ----- angular velocity (Δyaw) ------------------------------- #
+        vyaw = self._yaw_wrap(yaw[1:] - yaw[:-1])
+        vyaw = np.concatenate([[vyaw[0]], vyaw])     # [T]
+        vyaw = vyaw[:, None]                         # [T,1]
 
-    # ------------------------------------------------------------------
-    def _pad_target(self, tgt_tensor):
-        """Pad zeros if input has yaw but output does not."""
-        pad_cols = self.input_dim - self.output_dim               # 0 or 1
-        if pad_cols:                                              # yaw present
-            zeros = torch.zeros(tgt_tensor.shape[0], pad_cols,
-                                dtype=tgt_tensor.dtype)
-            tgt_tensor = torch.cat([tgt_tensor, zeros], dim=1)    # +yaw (0)
-        return tgt_tensor
+        # ----- stack all ------------------------------------------------
+        feats = np.hstack([pos_xy, vel_xy, vyaw])
+        return torch.tensor(feats, dtype=torch.float32)   # [T,7]
 
-    # ------------------------------------------------------------------
-    def _calculate_statistics(self):
-        all_tensors = []
-
-        for sample in self.data:
-            obs, tgt = self._unpack_sample(sample)
-            obs_t  = torch.tensor(obs,  dtype=torch.float32)
-            tgt_t  = torch.tensor(tgt,  dtype=torch.float32)
-
-            if self.include_velocity:
-                obs_t = self._add_velocity(obs_t)
-                tgt_t = self._add_velocity(tgt_t)
-
-            tgt_t = self._pad_target(tgt_t)                       # align width
-            all_tensors.extend([obs_t, tgt_t])
-
-        cat = torch.cat(all_tensors, dim=0)                       # safe concat
-        mean = cat.mean(dim=0)
-        std  = cat.std(dim=0)
-        std[std < 1e-6] = 1.0                                     # avoid /0
-        return mean, std
-
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ #
     def __len__(self):
         return len(self.data)
 
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ #
     def __getitem__(self, idx):
-        obs, tgt = self._unpack_sample(self.data[idx])
-        obs_t = torch.tensor(obs, dtype=torch.float32)
-        tgt_t = torch.tensor(tgt, dtype=torch.float32)
+        sample = self.data[idx]
+        
+        cat_vec = torch.tensor(self._CAT2IDX[sample["obs_cat"]], dtype=torch.long)
 
-        if self.include_velocity:
-            obs_t = self._add_velocity(obs_t)
-            tgt_t = self._add_velocity(tgt_t)
+        # ---- build trajectories ------------------------------------- #
+        obs_arr = self._build_traj(np.asarray(sample["obs"]))      # [L,7]
+        tgt_arr = self._build_traj(np.asarray(sample["target"]))   # [H,7]
 
-        tgt_t = self._pad_target(tgt_t)                           # align width
-        return obs_t, tgt_t
+        return cat_vec, obs_arr, tgt_arr

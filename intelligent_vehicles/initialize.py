@@ -23,33 +23,46 @@ from intelligent_vehicles.vehicles.hybrid_iv import HybridIntelligentVehicle
 
 logger = logging.getLogger(__name__)
 
-def extarct_vehicles_sensors_data(data):
+def extract_vehicles_sensors_data(data, ivs):
+    
     sensors_data = {}
-    for prefix, pkl_path in data.items():
-        logger.info(f"Processing pickle file for prefix '{prefix}': {pkl_path}")
-        with open(pkl_path, "rb") as f:
-            dataset = pickle.load(f)
-            scenarios = dataset["scenarios"]
-            for scenario, vehicles_data in scenarios.items():
-                for vehicle, ss_data in vehicles_data.items():
-                    if vehicle not in sensors_data:
-                        sensors_data[vehicle] = {}
-                    if prefix not in sensors_data[vehicle]:
-                        sensors_data[vehicle][prefix] = {}
-                    sensors_data[vehicle][prefix][scenario] = ss_data
-        logger.debug(f"Finished processing prefix '{prefix}'.")
-        
-        
-    # save each as vehicle + prefix as pkl
-    loc = "/".join(pkl_path.split("/")[:-2])
-    for vehicle_name, vehicle_data in sensors_data.items():
-        for prefix, data in vehicle_data.items():
-            output_pickle_path = os.path.join(loc, f"{prefix}/{vehicle_name}_{prefix}_data.pkl")
-            with open(output_pickle_path, 'wb') as f:
-                pickle.dump(data, f)
-                sensors_data[vehicle_name][prefix] = output_pickle_path
-                print(f"Saved dataset to {output_pickle_path}")
-    # save data and return path to the dataset 
+    pkls = {k:v for k,v in data.items() if isinstance(v, str) and v.endswith("pkl")}
+    
+    if data["preprocessed"]:
+        for iv in ivs:
+            sensors_data[iv] = {}
+            for prefix, pkl_path in pkls.items():
+                loc = "/".join(pkl_path.split("/")[:-2])
+                pickle_path = os.path.join(loc, f"{prefix}/{iv}_{prefix}_data.pkl")
+                if not os.path.isfile(pickle_path):
+                    logger.error(f"'{pickle_path}' does not exsist, please specify preprocessed as False in config.")
+                    exit()
+                sensors_data[iv][prefix] = pickle_path
+    else:
+        for prefix, pkl_path in pkls.items():
+            logger.info(f"Processing pickle file for prefix '{prefix}': {pkl_path}")
+            with open(pkl_path, "rb") as f:
+                dataset = pickle.load(f)
+                scenarios = dataset["scenarios"]
+                for scenario, vehicles_data in scenarios.items():
+                    for vehicle, ss_data in vehicles_data.items():
+                        if vehicle not in sensors_data:
+                            sensors_data[vehicle] = {}
+                        if prefix not in sensors_data[vehicle]:
+                            sensors_data[vehicle][prefix] = {}
+                        sensors_data[vehicle][prefix][scenario] = ss_data
+            logger.debug(f"Finished processing prefix '{prefix}'.")
+              
+        # save each as vehicle + prefix as pkl
+        loc = "/".join(pkl_path.split("/")[:-2])
+        for vehicle_name, vehicle_data in sensors_data.items():
+            for prefix, data in vehicle_data.items():
+                output_pickle_path = os.path.join(loc, f"{prefix}/{vehicle_name}_{prefix}_data.pkl")
+                with open(output_pickle_path, 'wb') as f:
+                    pickle.dump(data, f)
+                    sensors_data[vehicle_name][prefix] = output_pickle_path
+                    print(f"Saved dataset to {output_pickle_path}")
+        # save data and return path to the dataset 
     return sensors_data
     
 
@@ -112,7 +125,9 @@ def initialize_vehicle(sensors_data, vehicle_params):
 
 def initialize_vehicles(data, ego_vehicle_dict, vehicles_dict):
     logger.info("Extracting vehicles sensors data from pickle files.")
-    sensors_data = extarct_vehicles_sensors_data(data)
+    ivs = [iv_name["name"] for iv_name in vehicles_dict.values()]
+    ivs.extend([ego_vehicle_dict["name"]])
+    sensors_data = extract_vehicles_sensors_data(data, ivs)
     logger.info("Initializing ego vehicle.")
     ego_vehicle = initialize_vehicle(sensors_data[ego_vehicle_dict["name"]], ego_vehicle_dict)
     

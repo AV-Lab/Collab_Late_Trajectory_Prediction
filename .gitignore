@@ -1,6 +1,7 @@
-__pycache__/
-*.py[cod]
-*$py.class
-data/DeepAccident/
-*.log
-results/
+data/detections/
+temp/
+# Python cache files
+**/__pycache__/
+*temp*
+checkpoints/
+

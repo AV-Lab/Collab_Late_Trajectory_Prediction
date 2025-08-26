@@ -45,20 +45,33 @@ class BasicIntelligentVehicle:
         print(f"Initializing predictor with config: {predictor_config}")
         self.predictor = initialize_predictor(predictor_config)
     
-    def run_detector(self, frame_data, scenario=None):
+    def run_detector(self, frame_data, t, calibration, scenario=None):
         if hasattr(self.detector, "load_detections") and self.detector.load_detections:
-            detections = self.detector.detect(frame_data, scenario)
+            detections = self.detector.detect(scenario, t)
         else:
             detections = self.detector.detect(frame_data)
+            
+        is_tuple = True if type(detections) is tuple else False
+        if is_tuple:
+            detected = detections[0]
+            missing = detections[1]
+        else:
+            detected = detections
+            
+        detected = self.ego_motion_compensation(detected, calibration)
+        detections = (detected, missing) if is_tuple else detected   
+        
         return detections 
 
-    def run_tracker(self, detections, ego_pose, calibration):
-        self.tracker.track(detections, ego_pose, calibration)
+    def run_tracker(self, detections):
+        self.tracker.track(detections)
         tracklets = self.tracker.get_tracked_objects()
         return tracklets
     
     def run_predictor(self, tracklets):
-        pass
+        past_trajs = self.predictor.format_input(tracklets)
+        future_trajs = self.predictor.predict(past_trajs, self.prediction_horizon) 
+        return future_trajs
     
     def reset(self):
         self.tracker.reset()
@@ -69,21 +82,17 @@ class BasicIntelligentVehicle:
         Convert LiDAR-frame boxes to world frame (position + yaw).
         """
     
-        T_lw = calibration["ego_to_world"] @ calibration["lidar_to_ego"]  # 4×4
+        T_lw = calibration["ego_to_world"] @ calibration["lidar_to_ego"]
         R_lw = T_lw[:3, :3]
-    
-        # ego heading = yaw of LiDAR X-axis in world frame
-        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   # atan2(y,x)
-    
+        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   
+
         compensated = []
         for det in detections:
-            # ----- position
             pos_lidar = np.array([det["x"], det["y"], det["z"], 1.0])
             pos_world = T_lw @ pos_lidar
     
-            # ----- yaw  (add headings, then wrap)
             yaw_world = det["yaw"] + ego_heading
-            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap to (-π,π]
+            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap yaw to (-π,π]
     
             new_det = det.copy()
             new_det["x"], new_det["y"], new_det["z"] = pos_world[:3]
@@ -91,8 +100,7 @@ class BasicIntelligentVehicle:
             compensated.append(new_det)
     
         return compensated
-
-            
+        
     def __init__(self, name, detector_config, tracker_config, predictor_config, parameters, sensors, data):
     
         self.name = name
@@ -100,14 +108,15 @@ class BasicIntelligentVehicle:
         self.cur_velocity = None
         self.cur_yaw = None
         self.load_gt_detections = False
-        self.delta = 0.005 # should be dt/2 from global clock
+        self.delta = 0.01 # should be dt/2 from global clock
         self.starting_time = 0.0 # can include delays if needed
-        self.next_observation_time = self.starting_time        
+        self.next_observation_time = self.starting_time  
+        self.next_prediction_time = self.starting_time + 1.0 # delay by 1 second to make sure we have track history
         self.fps = parameters["fps"]
         self.tracking_history = parameters["tracking_history"]
         self.prediction_horizon = parameters["prediction_horizon"]
         self.prediction_frequency = parameters["prediction_frequency"]
-        self.forecasting_frequency = parameters["forecasting_frequency"]
+        self.prediction_sampling = parameters["prediction_sampling"]
         self.device = parameters["device"]
         
         if "train" in data:
@@ -123,8 +132,6 @@ class BasicIntelligentVehicle:
         tracker_config["tracking_history"] = self.tracking_history
         self._init_tracker(tracker_config)
         
-        predictor_config["observation_length"] = self.tracking_history
-        predictor_config["prediction_horizon"] = self.prediction_horizon*self.forecasting_frequency 
         predictor_config["device"] = self.device
         self._init_predictor(predictor_config)
     
@@ -134,25 +141,33 @@ class BasicIntelligentVehicle:
         if abs(t - self.next_observation_time) <= self.delta:
             self.next_observation_time += 1.0 / self.fps
             frame_data = self.test_loader.get_frame_data(t)
+            
             if frame_data == None:
                 logger.info(f"Vehicle {self.name} left the scene.")
                 self.next_observation_time = self.starting_time
+                self.next_prediction_time = self.starting_time + 1.0
                 return None
+            
             # if we recived observation 
             ego_state = frame_data["ego_state"]
             calibration = frame_data["calibration"]
             point_cloud = frame_data["lidar"]
+            trajectories = frame_data["trajectories"]
             
             # Run detection
-            detections = self.run_detector(frame_data, scenario)
-            detections = self.ego_motion_compensation(detections, calibration)
+            detections = self.run_detector(frame_data, t, calibration, scenario)
         
             # Update the tracker -> tracklets is numpy str array of 3D boxes [x, y, z, theta, l, w, h,s, obj_class]
-            tracklets = self.run_tracker(detections, ego_state, calibration)
+            tracklets = self.run_tracker(detections)
 
             # Check if it's time for prediction ask tracker for active tracklets and run predict
-            #if (t - self.last_prediction_time) >= (1.0 / self.prediction_frequency):            
-            #    predictions = self.run_predictor(tracklets)
-            #    self.last_prediction_time = t
+            predictions = None
+            if abs(t - self.next_prediction_time) <= self.delta: 
+                self.next_prediction_time += 1.0 / self.prediction_frequency  
+                predictions = self.run_predictor(tracklets)
             
-            return (tracklets, detections, point_cloud, ego_state, calibration)
+                return (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
+            
+            #return (point_cloud, detections, ego_state)
+            
+            return None

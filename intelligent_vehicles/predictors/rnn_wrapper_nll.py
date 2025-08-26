@@ -14,13 +14,13 @@ from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
-from intelligent_vehicles.predictors.sequential.rnn import RNNPredictor
+from intelligent_vehicles.predictors.sequential.rnn_nll_segment_ramp import RNNPredictorNLL
 from intelligent_vehicles.predictors.dataloaders.seq_loader import SeqDataset
 from torch.utils.data import DataLoader
 from scipy.interpolate import interp1d
 import os
 
-class RNNWrapper:
+class RNNWrapperNLL:
     def __init__(self, prediction_config):
         ## Add here all parameters
         # Configuration 
@@ -41,52 +41,18 @@ class RNNWrapper:
             prediction_config["prediction_horizon"] = 20
             
         self.batch_size = 128
-        self.predictor = RNNPredictor(prediction_config)
+        self.predictor = RNNPredictorNLL(prediction_config)
 
         if prediction_config["mode"] == "train":
             self.train_predictor(prediction_config["data_path"], prediction_config["save_path"])
             
     def format_input(self, tracklets):
+        """Collect past trajectories as arrays (no resampling)."""
         past_trajs = []
         for t in tracklets:
             traj = [np.array([record.x, record.y, record.yaw]) for record in t['tracklet']]
             past_trajs.append(np.array(traj))
         return past_trajs
-    
-    def resample_input(self, past_trajs, tracker_fps):
-        resampled_trajs = []
-        yaw_index = 2
-        
-        for traj in past_trajs:
-            N, D = traj.shape
-            duration = (N - 1) / tracker_fps
-            new_len = int(round(duration * self.predictor.trained_fps)) + 1
-    
-            t_original = np.linspace(0, duration, N)
-            t_new = np.linspace(0, duration, new_len)
-    
-            interpolated = np.zeros((new_len, D))
-    
-            for d in range(D):
-                if d == yaw_index:
-                    yaw = traj[:, d]
-                    x = np.cos(yaw)
-                    y = np.sin(yaw)
-    
-                    x_interp = interp1d(t_original, x, kind='linear', fill_value='extrapolate')(t_new)
-                    y_interp = interp1d(t_original, y, kind='linear', fill_value='extrapolate')(t_new)
-                    interpolated[:, d] = np.arctan2(y_interp, x_interp)
-                else:
-                    interpolated[:, d] = interp1d(t_original, traj[:, d], kind='linear', fill_value='extrapolate')(t_new)
-    
-            if interpolated.shape[0] < self.predictor.observation_length:
-                pad_len = self.predictor.observation_length - interpolated.shape[0]
-                padded = np.pad(interpolated, ((pad_len, 0), (0, 0)), mode='constant')
-                resampled_trajs.append(padded)
-            else:
-                resampled_trajs.append(interpolated[-self.predictor.observation_length:])
-    
-        return resampled_trajs
       
     def train_predictor(self, data_path, save_path):
         if not os.path.isdir(data_path):
@@ -107,39 +73,45 @@ class RNNWrapper:
             test_loader = DataLoader(SeqDataset(test_path), batch_size=self.batch_size, shuffle=False)
             
         if os.path.isfile(valid_path):
-            if test_loader == None:
+            if test_loader is None:
                 test_loader = DataLoader(SeqDataset(valid_path), batch_size=self.batch_size, shuffle=False)
             else:
                 valid_loader = DataLoader(SeqDataset(valid_path), batch_size=self.batch_size, shuffle=True)
                 
-        save_path = os.path.join(save_path, "lstm_predictor.pth")
+        save_path = os.path.join(save_path, "lstm_predictor_nll_segment_ramp_impuls.pth")
         
         self.predictor.train(train_loader, valid_loader, save_path)
         self.predictor.evaluate(test_loader)
-            
-    def predict(self, past_trajs, prediction_horizon, prediction_sampling):
-        predictions = self.predictor.predict(past_trajs, prediction_horizon)
-        
-        N_orig = len(predictions[0])
-        N_target = prediction_horizon * prediction_sampling
-    
-        t_orig = np.linspace(0, prediction_horizon, N_orig)
-        t_new = np.linspace(0, prediction_horizon, N_target)
-    
-        resampled_trajs = []
-        for pred in predictions:
-            print(pred)
-            if pred.shape[0] != N_orig:
-                raise ValueError(f"Expected {N_orig} steps, got {pred.shape[0]}")
-    
-            D = pred.shape[1]
-            interp_pred = np.zeros((N_target, D))
-            for d in range(D):
-                interp_pred[:, d] = interp1d(t_orig, pred[:, d], kind='linear', fill_value='extrapolate')(t_new)
-    
-            resampled_dict = {float(f"{t:.3f}"): interp_pred[i].tolist() for i, t in enumerate(t_new)}
-            resampled_trajs.append(resampled_dict)
-    
-        return resampled_trajs
-        
-        
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~  predict  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    def predict(self, past_trajs, prediction_horizon):
+        """
+        No resampling. Returns step-indexed dicts.
+
+        Args:
+            past_trajs: list[np.ndarray] with shape [T_obs, input_dim_raw]
+            prediction_horizon: seconds (the internal predictor handles FPS/steps)
+            prediction_sampling: IGNORED (kept for API compatibility)
+
+        Returns:
+            pred_means : list[dict]  # [{step: [x,y,...]}, ...] with step ∈ {0..H-1}
+            pred_covs  : list[dict]  # [{step: [[..],[..],...]} per-step Σ_pos], same keys
+        """
+        preds = self.predictor.predict(past_trajs, prediction_horizon)
+        # preds: list of {"mean": [H,D], "cov": [H,D,D]}
+        pred_means, pred_covs = [], []
+
+        for p in preds:
+            mean = np.asarray(p["mean"], dtype=np.float32)   # [H,D]
+            cov  = np.asarray(p["cov"],  dtype=np.float32)   # [H,D,D]
+            H, D = mean.shape
+            if cov.shape != (H, D, D):
+                raise ValueError(f"Covariance shape {cov.shape} does not match mean {(H, D)}")
+
+            mean_dict = {int(k): mean[k].tolist() for k in range(H)}
+            cov_dict  = {int(k):  cov[k].tolist()  for k in range(H)}
+
+            pred_means.append(mean_dict)
+            pred_covs.append(cov_dict)
+
+        return pred_means, pred_covs

@@ -22,6 +22,8 @@ This module is typically used for oracle or upper-bound performance analysis.
 """
 
 import logging
+import json
+import os
 logger = logging.getLogger(__name__)
 
 class GTWrapper:
@@ -40,3 +42,35 @@ class GTWrapper:
           'yaw': s['yaw'],
           'obj_id': s['obj_id']} for s in frame_data["labels"]]
         return bboxs  
+
+
+
+class GTNoiseWrapper:
+    def __init__(self, detections_path):
+        logger.info("The detections are taking from noisy ground truth.") 
+        self.detections = {}
+        self.load(detections_path)
+        
+    def load(self, detections_path):
+        files = os.listdir(detections_path)
+        
+        for file_name in files:
+            scenario_json = '/'.join(file_name.split('-'))
+            scenario = scenario_json.split('.')[0]
+            file = os.path.join(detections_path, file_name)
+            
+            with open(file, 'r') as f:
+                data = json.load(f)
+                split_data = {}
+                for t, dets in data.items():
+                    detected = [d for d in dets if d['x'] != None]
+                    missed = [d for d in dets if d['x'] == None]
+                    split_data[t] = (detected, missed)
+                self.detections[scenario] = split_data
+                
+        logger.info("The detections are loaded.") 
+        self.load_detections = True
+    
+    def detect(self, scenario, t):
+        return self.detections[scenario][str(round(t,1))]
+    

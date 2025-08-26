@@ -2,32 +2,36 @@ dataset:
   name: "DeepAccident"
   path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/DeepAccident"
   prefixes:
-    # - "train"
+    - "train"
     - "valid"
+  fps: 10  
+  preprocessed: true
 
 ego_vehicle:
-  name: "ego_vehicle"
-  type: "basic"  # [basic, aggregating, broadcasting, hybrid]
+  name: "other_vehicle"
+  type: "basic"
   parameters:
-    fps: 20 #frames per second
+    fps: 10
     tracking_history: 20 # bbox to save 
-    prediction_horizon: 2 # seconds
-    prediction_frequency: 5 
-    forecasting_frequency: 10
-    device: "cuda" # options [cuda, cpu, cuda:1]
+    prediction_horizon: 2
+    prediction_frequency: 10
+    prediction_sampling: 10
+    device: "cuda:0"
 
   detector:
-    name: "gt"    # [gt, centerpoint]
+    name: "gt_noise"    # [gt, centerpoint]
+    det_path: "data/detections/DeepAccident/noisy_observations_kf/val/other_vehicle"
 
   tracker:
-    name: "gt" #["gt", "ab3dmot"]
-    # No mode or checkpoint needed, as it's algorithmic
+    name: "gt_noise"
 
   predictor:
-    name: "lstm"   # [lstm, gcn, gat, gcn_temporal, gat_temporal, transformer, transformer_gnn]
-    mode: "train" #["train"] 
-    data_path: "data/prediction/DeepAccident/ego_vehicle"
-    save_path: "checkpoints/prediction/ego_vehicle"
+    name: "lstm_nll"
+    mode: "eval"
+    checkpoint: "checkpoints/prediction/10_20_vx_vy/other_vehicle/lstm_predictor_nll_segment_ramp.pth"
+    #mode: "train" #["train"] 
+    #data_path: "data/prediction/DeepAccident/10_20/other_vehicle"
+    #save_path: "checkpoints/prediction/10_20_vx_vy/other_vehicle"
 
   broadcaster:
     broadcasting_frequency: 10
@@ -36,90 +40,93 @@ ego_vehicle:
   sensors:
     - "lidar01"
 
-
 vehicles:
   vehicle_1:
+    name: "ego_vehicle"
+    type: "basic"  # [basic, aggregating, broadcasting, hybrid]
+    parameters:
+      fps: 10 #frames per second
+      tracking_history: 10 # bbox to save 
+      prediction_horizon: 2 # seconds
+      prediction_frequency: 10 
+      prediction_sampling: 10
+      device: "cuda:0" # options [cuda, cpu, cuda:1]
+    
+    detector:
+      name: "gt"    # [gt, gt_noise, centerpoint] 
+      #det_path: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
+    
+    tracker:
+      name: "gt" #[gt, gt_noise, ab3dmot]
+      # No mode or checkpoint needed, as it's algorithmic
+    
+    predictor:
+      name: "lstm"   # [lstm, lstm_cat, transformer, transformer_cat]
+      mode: "eval"
+      checkpoint: "checkpoints/prediction/10_20_vx_vy/ego_vehicle/lstm_predictor.pth"
+      #mode: "train" #["train"] 
+      #data_path: "data/prediction/DeepAccident/10_20/ego_vehicle"
+      #save_path: "checkpoints/prediction/10_20_vx_vy_vyaw/ego_vehicle/"
+    
+    broadcaster:
+      broadcasting_frequency: 10
+      broadcasting_range: 50
+    
+    sensors:
+      - "lidar01"
+
+
+  vehicle_2:
     name: "ego_vehicle_behind"
     type: "basic"
     parameters:
-      fps: 20
-      tracking_history: 20 # bbox to save 
-      prediction_horizon: 2
-      prediction_frequency: 5
-      forecasting_frequency: 10
-      device: "cpu"
-
-    detector:
-      name: "gt"    # [gt, centerpoint]
-      checkpoint: ""
-
-    tracker:
-      name: "ab3dmot"
-
-    predictor:
-      name: "gat_temporal"
-      mode: "eval"
-      checkpoint: "/path/to/gat_temporal_train.ckpt"
-
-    broadcaster:
-      broadcasting_frequency: 10
-      broadcasting_range: 50
-
-    sensors:
-      - "lidar01"
-
-  vehicle_2:
-    name: "other_vehicle"
-    type: "basic"
-    parameters:
       fps: 10
-      tracking_history: 20 # bbox to save 
+      tracking_history: 10 # bbox to save 
       prediction_horizon: 2
-      prediction_frequency: 5
-      forecasting_frequency: 10
-      device: "cpu"
-
+      prediction_frequency: 10
+      prediction_sampling: 10
+      device: "cuda:0"
+    
     detector:
-      name: "gt"    # [gt, centerpoint]
-      checkpoint: ""
-
+      name: "gt"   
+     
     tracker:
-      name: "ab3dmot"
-
+      name: "gt"
+    
     predictor:
-      name: "transformer"
+      name: "lstm"
       mode: "eval"
-      checkpoint: "/path/to/transformer_eval.ckpt"
-
+      checkpoint: "checkpoints/prediction/10_20_vx_vy/ego_vehicle_behind/lstm_predictor.pth"
+    
     broadcaster:
       broadcasting_frequency: 10
       broadcasting_range: 50
-
+    
     sensors:
       - "lidar01"
+    
 
   vehicle_3:
     name: "other_vehicle_behind"
     type: "basic"
     parameters:
       fps: 10
-      tracking_history: 20 # bbox to save 
+      tracking_history: 10 # bbox to save 
       prediction_horizon: 2
-      prediction_frequency: 5
-      forecasting_frequency: 10
-      device: "cpu"
+      prediction_frequency: 10
+      prediction_sampling: 10
+      device: "cuda:0"
 
     detector:
-      name: "gt"    # [gt, centerpoint]
-      checkpoint: ""
+      name: "gt"
 
     tracker:
-      name: "ab3dmot"
+      name: "gt"
 
     predictor:
-      name: "transformer_gnn"
+      name: "lstm"
       mode: "eval"
-      checkpoint: "/path/to/transformer_gnn_train.ckpt"
+      checkpoint: "checkpoints/prediction/10_20_vx_vy/other_vehicle_behind/lstm_predictor.pth"
 
     broadcaster:
       broadcasting_frequency: 10

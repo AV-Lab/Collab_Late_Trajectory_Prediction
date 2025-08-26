@@ -14,6 +14,7 @@ import numpy as np
 import logging
 
 from collections import namedtuple
+from typing import List, Dict
 position = namedtuple('Position', ['x', 'y', 'z','yaw'])
 
 class TrajDataloader:
@@ -97,46 +98,98 @@ class TrajDataloader:
         self.timestamps = sorted(self.loaded_frames.keys())
         self.trajectories = self._compute_trajectories()
 
+    def ego_motion_compensation(self, detections, calibration) -> List[Dict[str, float]]:
+        """
+        LiDAR-frame → world-frame for each detection.
+    
+        Parameters
+        ----------
+        detections   : list of dicts with keys at least
+                       {'x','y','z','yaw', 'length','width','height', 'obj_id', ...}
+        calibration  : {
+            'lidar_to_ego':   4×4 np.ndarray,
+            'ego_to_world':   4×4 np.ndarray
+          }
+    
+        Returns
+        -------
+        list of dicts in world frame (same objects, in-place edited & returned)
+        """
+        T_lw = calibration["ego_to_world"] @ calibration["lidar_to_ego"]  # 4×4
+        R_lw = T_lw[:3, :3]
+    
+        # ego heading = yaw of LiDAR X-axis in world frame
+        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   # atan2(y,x)   
+        compensated = []
+        
+        for det in detections:
+            # ----- position
+            pos_lidar = np.array([det["x"], det["y"], det["z"], 1.0])
+            pos_world = T_lw @ pos_lidar
+    
+            # ----- yaw  (add headings, then wrap)
+            yaw_world = det["yaw"] + ego_heading
+            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap to (-π,π]
+    
+            new_det = det.copy()
+            new_det["x"], new_det["y"], new_det["z"] = pos_world[:3]
+            new_det["yaw"] = yaw_world
+            compensated.append(new_det)
+    
+        return compensated
+
     def _compute_trajectories(self):
         """
-        Computes trajectories for each object across all frames and stores them directly into loaded_frames.
-        For each timestamp and each object, computes:
-            - 'past': states from timestamps < t
-            - 'current': state and bbox at timestamp t
-            - 'future': states from timestamps > t
+        Build per-object trajectories in **world frame** and store them into
+        self.loaded_frames[t]['trajectories'].
+    
+            past   : list[position]  (ts < t)
+            current_state : np.ndarray[7]  (x,y,z,l,w,h,yaw)
+            future : list[position]  (ts > t)
         """
-        trajectories = {}
+        # 1) gather every object’s time-ordered states in WORLD frame
+        trajectories = {}             # obj_id → [(t, box_dict_world), ...]
     
-        # Accumulate states for each object across timestamps
         for t in self.timestamps:
-            labels = self.loaded_frames[t]["labels"]
-            for label in labels:
-                obj_id = label['obj_id'] if isinstance(label, dict) else label.obj_id
-                if obj_id not in trajectories:
-                    trajectories[obj_id] = []
-                trajectories[obj_id].append((t, label))
+            calib   = self.loaded_frames[t]['calibration']
+            labels  = self.loaded_frames[t]['labels']
+            labels_w = self.ego_motion_compensation(labels, calib)  # NEW
+
+            # keep for later (debug / visualisation if you want)
+            self.loaded_frames[t]['labels_world'] = labels_w
     
-        # For each timestamp, store past, current, future
+            for det in labels_w:
+                oid = det['obj_id'] if isinstance(det, dict) else det.obj_id
+                trajectories.setdefault(oid, []).append((t, det))
+    
+        # 2) for every frame build {obj_id: {past,current_state,future}}
         for t in self.timestamps:
             frame_traj = {}
-            for obj_id, entries in trajectories.items():
-                past = [position(s['x'], s['y'], s['z'], s['yaw']) for (ts, s) in entries if ts < t]
-                future = [position(s['x'], s['y'], s['z'], s['yaw']) for (ts, s) in entries if ts > t]
-                current_state = None
     
-                for (ts, s) in entries:
-                    if abs(ts - t) < 1e-3:
-                        current_state = np.array(list(s.values())[1:8])
-                        break
+            for oid, seq in trajectories.items():
+                past   = [position(s['x'], s['y'], s['z'], s['yaw'])
+                          for (ts, s) in seq if ts <= t]
+                future = [position(s['x'], s['y'], s['z'], s['yaw'])
+                          for (ts, s) in seq if ts > t]
+                
+                if len(past) == 0 or len(future) == 0: continue
     
-                if current_state is not None:
-                    frame_traj[obj_id] = {
+                state = next(
+                    ((np.array([s['x'], s['y'], s['z'],
+                               s.get('length', 0), s.get('width', 0),
+                               s.get('height', 0), s['yaw']], dtype=np.float32), s['label'])
+                     for (ts, s) in seq if abs(ts - t) < 1e-3),
+                    None)
+    
+                if state is not None:
+                    frame_traj[oid] = {
+                        'category': state[1],    
                         'past': past,
-                        'current_state': current_state,
+                        'current_state': state[0],
                         'future': future
                     }
+                    
     
-            # Store trajectories within the loaded_frames at the current timestamp
             self.loaded_frames[t]['trajectories'] = frame_traj
 
         

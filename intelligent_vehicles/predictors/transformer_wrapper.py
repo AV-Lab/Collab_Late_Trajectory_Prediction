@@ -14,34 +14,52 @@ from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
-from intelligent_vehicles.predictors.sequential.rnn import RNNPredictor
+from intelligent_vehicles.predictors.sequential.transformer_category import TransformerPredictorWithCategory
+from intelligent_vehicles.predictors.sequential.transformer import TransformerPredictor
 from intelligent_vehicles.predictors.dataloaders.seq_loader import SeqDataset
 from torch.utils.data import DataLoader
 from scipy.interpolate import interp1d
 import os
 
-class RNNWrapper:
+class TransformerWrapper:
     def __init__(self, prediction_config):
         ## Add here all parameters
         # Configuration 
         if prediction_config["mode"] == "train":
+            prediction_config["past_trajectory"] = 10
+            prediction_config["future_trajectory"] = 20
             prediction_config["checkpoint"] = None
-            prediction_config["hidden_size"] = 128
-            prediction_config["num_layers"] = 2
-            prediction_config["input_size"] = 2
-            prediction_config["output_size"] = 2
-    
-            # Training 
-            prediction_config["num_epochs"] = 30
-            prediction_config["learning_rate"] = 0.001
-            prediction_config["patience"] = 5
-            prediction_config["normalize"] = False
+            prediction_config["in_features"] = 2
+            prediction_config["out_features"] = 2
+            prediction_config["num_heads"] = 4
+            prediction_config["num_encoder_layers"] = 3
+            prediction_config["num_decoder_layers"] = 3
+            prediction_config["embedding_size"] = 256
+            prediction_config["dropout_encoder"] = 0.25
+            prediction_config["dropout_decoder"] = 0.25
+            prediction_config["batch_first"] = True
+            prediction_config["actn"] = "relu"
+            prediction_config["num_epochs"] = 50
+            prediction_config["cat_embed_dim"] = 8
+            prediction_config["num_categories"] = 6
+            prediction_config["normalize"] = False 
+        
+            # Optimizer parameters
+            prediction_config["lr_mul"] = 0.2
+            prediction_config["n_warmup_steps"] = 3500
+            prediction_config["optimizer_betas"] = (0.9, 0.98)
+            prediction_config["optimizer_eps"] = 1e-9
+        
+            # Early stopping parameters
+            prediction_config["early_stopping_patience"] = 15
+            prediction_config["early_stopping_delta"] = 0.01
             
-            prediction_config["observation_length"] = 10
-            prediction_config["prediction_horizon"] = 20
-            
-        self.batch_size = 128
-        self.predictor = RNNPredictor(prediction_config)
+        self.batch_size = 32
+                
+        if prediction_config["category"]:
+            self.predictor = TransformerPredictorWithCategory(prediction_config) 
+        else:
+            self.predictor = TransformerPredictor(prediction_config)   
 
         if prediction_config["mode"] == "train":
             self.train_predictor(prediction_config["data_path"], prediction_config["save_path"])
@@ -50,6 +68,8 @@ class RNNWrapper:
         past_trajs = []
         for t in tracklets:
             traj = [np.array([record.x, record.y, record.yaw]) for record in t['tracklet']]
+            cur_pos = np.concatenate([t['current_pos'][:2], t['current_pos'][-1:]])
+            traj.append(cur_pos)
             past_trajs.append(np.array(traj))
         return past_trajs
     
@@ -99,7 +119,7 @@ class RNNWrapper:
         if not os.path.isfile(train_path):
             raise FileNotFoundError(f"train.pkl is missing in: {data_path}")
     
-        train_loader = DataLoader(SeqDataset(train_path), batch_size=self.batch_size, shuffle=True)
+        train_loader = DataLoader(SeqDataset(train_path, normalize=True), batch_size=self.batch_size, shuffle=True)
         test_loader = None
         valid_loader = None
         
@@ -112,7 +132,7 @@ class RNNWrapper:
             else:
                 valid_loader = DataLoader(SeqDataset(valid_path), batch_size=self.batch_size, shuffle=True)
                 
-        save_path = os.path.join(save_path, "lstm_predictor.pth")
+        save_path = os.path.join(save_path, "transformer_predictor_norm.pth")
         
         self.predictor.train(train_loader, valid_loader, save_path)
         self.predictor.evaluate(test_loader)
@@ -128,7 +148,6 @@ class RNNWrapper:
     
         resampled_trajs = []
         for pred in predictions:
-            print(pred)
             if pred.shape[0] != N_orig:
                 raise ValueError(f"Expected {N_orig} steps, got {pred.shape[0]}")
     
