@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 import logging
 from typing import Dict, List, Optional
+import math
 
 
 class Evaluator:
@@ -20,62 +21,73 @@ class Evaluator:
 
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
-        # overall accumulators (sum of *scenario averages*)
-        self.overall_ade  = np.zeros(3, dtype=np.float64)
-        self.overall_fde  = np.zeros(3, dtype=np.float64)
+        self.overall_ade  = 0.0
+        self.overall_fde  = 0.0
         self.overall_missed = 0
         self.overall_msne = 0.0
         self.overall_msne_count = 0  # scenarios with finite MSNE
         self.cat_totals: Dict[str, Dict[str, float]] = {}
         self.scenario_summaries: List[Dict] = []
 
-        # current-scenario accumulators
-        self._sc_ade_sum = np.zeros(3, dtype=np.float64)
-        self._sc_fde_sum = np.zeros(3, dtype=np.float64)
-        self._sc_frames  = 0
-        self._sc_msne_sum = 0.0
-        self._sc_msne_frames = 0  # frames with finite MSNE
-
     # -------- per-scenario lifecycle -------- #
 
     def begin_scenario(self):
-        self._sc_ade_sum[:] = 0.0
-        self._sc_fde_sum[:] = 0.0
+        self._sc_ade_sum = 0.0
+        self._sc_fde_sum = 0.0
         self._sc_frames = 0
         self._sc_msne_sum = 0.0
         self._sc_msne_frames = 0
 
-    def accumulate(self, metrics: Dict, by_cat: Dict[str, Dict[str, float]]):
+    def accumulate(self, metrics):
         """
         Add one frame’s metrics into the running scenario totals and global category totals.
-        Expects `metrics` as returned by compute_frame_based_performance().
+        Expects `metrics` shaped like:
+          {"overall": {...}, "by_cat": {...}}
         """
-        ade_vec = metrics.get("ade")
-        if ade_vec is not None and len(ade_vec) > 0 and not np.isnan(ade_vec[0]):
-            self._sc_ade_sum += np.asarray(metrics["ade"], dtype=np.float64)
-            self._sc_fde_sum += np.asarray(metrics["fde"], dtype=np.float64)
-            self._sc_frames  += 1
+        overall = metrics.get("overall", {})
+        by_cat  = metrics.get("by_cat", {})
+    
+        # overall ADE/FDE means (frame-level)
+        ade_mean = overall.get("ADE_mean")
+        fde_mean = overall.get("FDE_mean")
+        
+        if ade_mean is not None and not math.isnan(ade_mean):
+            self._sc_ade_sum += ade_mean
+        if fde_mean is not None and not math.isnan(fde_mean):
+            self._sc_fde_sum += fde_mean
+        self._sc_frames  += 1
+    
+        # MSNE mean (only counted if provided and not NaN)
+        msne_val = overall.get("MSNE_mean")
+        if msne_val is not None and not math.isnan(msne_val):
+            self._sc_msne_sum    += msne_val
+            self._sc_msne_frames += 1
+    
+        # per-category frame-averaged metrics + counts
+        for cat, m in by_cat.items():
+            ent = self.cat_totals.setdefault(
+                cat, {"ade_sum": 0.0, "fde_sum": 0.0, "frames": 0,
+                      "num_matched": 0, "num_missed": 0, "num_false_positives": 0}
+            )
+            ade_c = m.get("ADE_mean")
+            fde_c = m.get("FDE_mean")
+            if ade_c is not None and not math.isnan(ade_c):
+                ent["ade_sum"] += ade_c
+            if fde_c is not None and not math.isnan(fde_c):
+                ent["fde_sum"] += fde_c
+            ent["frames"]  += 1
+    
+            ent["num_matched"]        += int(m.get("num_matched", 0))
+            ent["num_missed"]         += int(m.get("num_missed", 0))
+            ent["num_false_positives"]+= int(m.get("num_false_positives", 0))
+    
+        # global counts
+        self.overall_missed += int(overall.get("num_missed", 0))
 
-            # MSNE (scalar per frame)
-            msne_val = metrics.get("msne", np.nan)
-            if msne_val is not None and not np.isnan(msne_val):
-                self._sc_msne_sum += float(msne_val)
-                self._sc_msne_frames += 1
-
-            # per-category accumulation (frame-averaged deltas)
-            for cat, m in by_cat.items():
-                ent = self.cat_totals.setdefault(cat, {"ade_sum": 0.0, "fde_sum": 0.0, "frames": 0})
-                dADE = m.get("ΔADE_mean")
-                dFDE = m.get("ΔFDE_mean")
-                if dADE is not None and not np.isnan(dADE):
-                    ent["ade_sum"] += float(dADE)
-                    ent["fde_sum"] += float(dFDE)
-                    ent["frames"]  += 1
-
-            self.overall_missed += metrics.get("num_missed", 0)
 
     def end_scenario(self, name: str):
         """Finalize this scenario: compute averages, add to overall, and log."""
+        print(self._sc_frames, self._sc_ade_sum, self._sc_fde_sum)
         if self._sc_frames:
             sc_ade = self._sc_ade_sum / self._sc_frames
             sc_fde = self._sc_fde_sum / self._sc_frames
@@ -85,12 +97,12 @@ class Evaluator:
 
             self.overall_ade += sc_ade
             self.overall_fde += sc_fde
-            if not np.isnan(sc_msne):
+            if sc_msne is not None and not math.isnan(sc_msne):
                 self.overall_msne += sc_msne
                 self.overall_msne_count += 1
         else:
-            sc_ade = np.array([np.nan, np.nan, np.nan])
-            sc_fde = np.array([np.nan, np.nan, np.nan])
+            sc_ade = float("nan")
+            sc_fde = float("nan")
             sc_msne = float("nan")
             self.logger.info(f"[{name}] no valid matches – ADE/FDE/MSNE undefined")
 

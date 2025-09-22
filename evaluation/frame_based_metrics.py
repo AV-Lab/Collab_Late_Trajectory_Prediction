@@ -1,22 +1,14 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Aug 15 17:01:37 2025
-
-@author: nadya
-"""
-
-
 import numpy as np
-from typing import Sequence  # (optional; only used in docstrings)
+from typing import Dict, List, Optional, Tuple
 
 # ------------------------------ geometry & metrics ------------------------------ #
 
 def axis_aligned_bbox(box7d):
     """
     Convert 7-DoF box [x, y, z, dx, dy, dz, yaw] → 2D axis-aligned (xmin, ymin, xmax, ymax).
+    Note: ignores yaw by design (AABB).
     """
-    x, y, z, dx, dy, dz, yaw = box7d
+    x, y, z, dx, dy, dz = box7d[:6]
     dx *= 0.5
     dy *= 0.5
     return x - dx, y - dy, x + dx, y + dy
@@ -32,50 +24,68 @@ def iou(r1, r2):
     ix2, iy2 = min(xa2, xb2), min(ya2, yb2)
     iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
     inter = iw * ih
-    if inter == 0:
+    if inter == 0.0:
         return 0.0
     area_a = (xa2 - xa1) * (ya2 - ya1)
     area_b = (xb2 - xb1) * (yb2 - yb1)
     return inter / (area_a + area_b - inter + 1e-9)
 
 
-def ade(pred, gt):
-    """Average displacement error over T steps."""
-    return float(np.mean(np.linalg.norm(pred - gt, axis=1)))
+def ade(pred: np.ndarray, gt: np.ndarray) -> float:
+    """Average displacement error over T steps (L2 per step, mean)."""
+    return float(np.mean(np.linalg.norm(pred - gt, axis=1))) if len(pred) > 0 else float("nan")
 
 
-def fde(pred, gt):
-    """Final displacement error at the last step."""
+def fde(pred: np.ndarray, gt: np.ndarray) -> float:
+    """Final displacement error at the last step (L2 on last)."""
+    if len(pred) == 0:
+        return float("nan")
     return float(np.linalg.norm(pred[-1] - gt[-1]))
 
 
-def to_vec(obj, k, hz, reverse=False):
+def to_vec(obj, k: int, hz: int, reverse: bool = False) -> np.ndarray:
     """
     Pack irregular past/future into dense (hz, k); pad missing rows with zeros.
-    Accepts dict {ts → (x,y,z,…)} or an ordered sequence with .x/.y/.z attributes.
+    Accepts:
+      - dict {ts → [D]}  (we will take first k dims)
+      - sequence of objects/tuples with .x/.y/.z or indexable [0:3]
     """
     out = np.zeros((hz, k), dtype=np.float32)
 
     if isinstance(obj, dict):
-        ts_sorted = sorted(obj)
+        ts_sorted = sorted(obj.keys())
         sel = ts_sorted[-hz:] if reverse else ts_sorted[:hz]
-        rows = [obj[t][:k] for t in sel]
+        rows = [np.asarray(obj[t], dtype=np.float32)[:k] for t in sel]
     else:
         seq = obj[-hz:] if reverse else obj[:hz]
-        rows = [[getattr(p, c) for c in "xyz"[:k]] for p in seq]
+        rows = []
+        for p in seq:
+            if hasattr(p, "x"):
+                rows.append([p.x, p.y, p.z][:k])
+            else:
+                rows.append(list(p)[:k])
 
+    rows = np.asarray(rows, dtype=np.float32)
     if reverse:
-        out[-len(rows):] = np.asarray(rows, dtype=np.float32)
+        out[-len(rows):] = rows
     else:
-        out[:len(rows)] = np.asarray(rows, dtype=np.float32)
-
+        out[:len(rows)] = rows
     return out
 
 
-def extract_parameters(tracklets, predictions):
-    pred_len = len(predictions[0])
-    input_dimension = len(predictions[0][0.0])
-    t = np.array(sorted(predictions[0].keys()), dtype=np.float32)
+def extract_parameters(tracklets, pred_means: List[Dict[float, List[float]]]) -> Tuple[int, int, int, int]:
+    """
+    Infer (sampling, horizon_steps, input_dimension, pred_len) from prediction MEANS.
+
+    Supports:
+      - dict form: pred_means[i] = {t: [D]}
+      - array form: pred_means[i] = ndarray of shape (T, D)
+
+    If timestamps are absent (array form or 1 timestamp), assume dt = 0.1s (10 Hz).
+    """
+    pred_len = len(pred_means[0])
+    input_dimension = len(pred_means[0][0.0])
+    t = np.array(sorted(pred_means[0].keys()), dtype=np.float32)
     dt = float(np.median(np.diff(t)))
     sampling = int(round(1.0 / dt))
     horizon = int(np.ceil(dt * (pred_len - 1)))
@@ -108,274 +118,200 @@ def find_matching_tracklet_by_iou(gt_obj, used_trk, iou_th, tracklets):
         return best_idx
     return None
 
-
-def predict_based_on_gt_past(vehicle, matched):
-    predictions = []
-    if matched:
-        tracks = [m["gt_past"] for m in matched]
-        tracks = vehicle.predictor.resample_input(tracks, vehicle.fps)
-        predictions = vehicle.predictor.predict(tracks, vehicle.prediction_horizon, vehicle.prediction_sampling)
-    return predictions
-
 # ------------------------------ evaluation helpers ------------------------------ #
 
-def compute_statistics(matched, tracklets, predictions, base_predictions, input_dimension):
+def compute_label_metrics(matched: List[Dict]) -> Tuple[np.ndarray, np.ndarray, List[Dict]]:
     """
+    Compute per-object ADE/FDE on matched items.
     Returns:
-      ade_list: (N, 3) with [ade_track, ade_base, ΔADE]
-      fde_list: (N, 3) with [fde_track, fde_base, ΔFDE]
-      stats   : list of dicts per matched object (metrics + metadata)
+      ade_list: (N,) of ADE
+      fde_list: (N,) of FDE
+      stats   : list of dicts per matched object (metrics + metadata) for the class evaluator
     """
-    ade_list, fde_list, stats = [], [], []
+    ade_vals, fde_vals, stats = [], [], []
 
-    for jdx, m in enumerate(matched):
-        hz = m["hz"]
-        category = m["category"]
-        conf = m["confidence"]
-        pred_vec = m["future"]
-        gt_vec = m["gt_future"]
-        base_vec = to_vec(base_predictions[jdx], input_dimension, hz)
+    for m in matched:
+        pred_vec = m["future"]      # [hz, D]
+        gt_vec   = m["gt_future"]   # [hz, D]
+        ade_v = ade(pred_vec, gt_vec)
+        fde_v = fde(pred_vec, gt_vec)
 
-        ade_track = ade(pred_vec, gt_vec)
-        fde_track = fde(pred_vec, gt_vec)
-        ade_base = ade(base_vec, gt_vec)
-        fde_base = fde(base_vec, gt_vec)
-
-        dADE = ade_track - ade_base
-        dFDE = fde_track - fde_base
-
-        ade_list.append([ade_track, ade_base, dADE])
-        fde_list.append([fde_track, fde_base, dFDE])
+        ade_vals.append(ade_v)
+        fde_vals.append(fde_v)
 
         stats.append({
             "id": m["gid"],
-            "ADE_t": ade_track,
-            "FDE_t": fde_track,
-            "ADE_p": ade_base,
-            "FDE_p": fde_base,
-            "ΔADE": dADE,
-            "ΔFDE": dFDE,
-            "confidence": conf,
-            "category": category
+            "ADE": ade_v,
+            "FDE": fde_v,
+            "confidence": m.get("confidence", 1.0),
+            "category": m.get("category", "unknown")
         })
 
-    return np.array(ade_list), np.array(fde_list), stats
+    return np.asarray(ade_vals, dtype=np.float32), np.asarray(fde_vals, dtype=np.float32), stats
 
 
-def compute_by_category_statistics(stats, missed, false_pos):
-    by_cat = {}
+def compute_by_category_statistics(stats: List[Dict], missed: List[Dict], false_pos: List[Dict]) -> Dict:
+    """
+    Build per-category aggregates with counts and mean ADE/FDE across matched items.
+    """
+    by_cat: Dict[str, Dict] = {}
 
     def cat_entry(cat):
         return by_cat.setdefault(cat, {
-            "ΔADE_vals": [], "ΔFDE_vals": [],
+            "ADE_vals": [], "FDE_vals": [],
             "num_matched": 0, "num_missed": 0, "num_false_positives": 0
         })
 
     for m in stats:
         ent = cat_entry(m["category"])
-        ent["ΔADE_vals"].append(m["ΔADE"])
-        ent["ΔFDE_vals"].append(m["ΔFDE"])
+        ent["ADE_vals"].append(m["ADE"])
+        ent["FDE_vals"].append(m["FDE"])
         ent["num_matched"] += 1
 
     for g in missed:
-        cat_entry(g["category"])["num_missed"] += 1
+        cat_entry(g.get("category", "unknown"))["num_missed"] += 1
 
     for fp in false_pos:
-        cat_entry(fp["category"])["num_false_positives"] += 1
+        cat_entry(fp.get("category", "unknown"))["num_false_positives"] += 1
 
     for cat, ent in by_cat.items():
-        ent["ΔADE_mean"] = float(np.mean(ent["ΔADE_vals"])) if ent["ΔADE_vals"] else float("nan")
-        ent["ΔFDE_mean"] = float(np.mean(ent["ΔFDE_vals"])) if ent["ΔFDE_vals"] else float("nan")
-        ent.pop("ΔADE_vals")
-        ent.pop("ΔFDE_vals")
+        ent["ADE_mean"] = float(np.mean(ent["ADE_vals"])) if ent["ADE_vals"] else float("nan")
+        ent["FDE_mean"] = float(np.mean(ent["FDE_vals"])) if ent["FDE_vals"] else float("nan")
+        ent.pop("ADE_vals")
+        ent.pop("FDE_vals")
 
     return by_cat
 
-# ------------------------------ main eval ------------------------------ #
+# ------------------------------ main evaluation ------------------------------ #
 
-def predict_based_on_gt_past(vehicle, matched):
+def compute_frame_based_performance(
+    predictions,
+    tracklets: List[Dict],
+    gt_predictions: Dict,         # {gid: {"past": dict/seq, "future": dict/seq, "current_state": [7], "category": str}}
+    use_id: bool = False,
+    iou_th: float = 0.75,
+):
     """
+    predictions:
+        - with uncertainty: (pred_means, pred_covs)
+            pred_means[i] : dict {time: [D]}        # mean positions
+            pred_covs[i]  : dict {time: [D,D]}      # per-step covariance
+        - without uncertainty: pred_means
+            pred_means[i] : dict {time: [D]}        # MSNE will be NaN
+
     Returns:
-        base_means : list[dict]   # [{t: [D]}, ...]
-        base_covs  : list[dict]   # [{t: [D,D]}, ...]
+        forecasts, metrics  (metrics = {"overall": ..., "by_cat": ...})
     """
-    base_means, base_covs = [], []
-    if matched:
-        tracks = [m["gt_past"] for m in matched]
-        base_means, base_covs = vehicle.predictor.predict(tracks, vehicle.prediction_horizon)
-    return base_means, base_covs
 
+    if isinstance(predictions, tuple):
+        pred_means, pred_covs = predictions
+    else:
+        pred_means, pred_covs = predictions, None
 
-def compute_frame_based_performance(predictions, tracklets, gt_predictions, vehicle,
-                                    use_id=False, iou_th=0.75):
-    """
-    predictions: tuple (pred_means, pred_covs)
-        pred_means[i] : dict {time: [D]}        # mean positions
-        pred_covs[i]  : dict {time: [D,D]}      # per-step position covariance
-    """
-    pred_means, pred_covs = predictions
-
-    # derive dims/lengths from MEANS (not covs)
-    sampling, horizon, input_dimension, pred_len = extract_parameters(tracklets, pred_means)
+    sampling, horizon_steps, input_dimension, pred_len = extract_parameters(tracklets, pred_means)
     matched, missed, false_pos, used_trk = [], [], [], set()
 
-    # ---------------- match GT to tracker ---------------- #
     for gid, gt_obj in gt_predictions.items():
         hz = min(pred_len, len(gt_obj["future"]))
-        category = gt_obj.get("category", "unknown")
-        gt_past = to_vec(gt_obj["past"], input_dimension, vehicle.tracking_history, reverse=True)
-        gt_pred = to_vec(gt_obj["future"], input_dimension, hz)
 
-        match_idx = find_matching_tracklet_by_id(gid, tracklets) if use_id \
-                    else find_matching_tracklet_by_iou(gt_obj, used_trk, iou_th, tracklets)
+        # match by id or iou
+        match_idx = (find_matching_tracklet_by_id(gid, tracklets) if use_id
+                     else find_matching_tracklet_by_iou(gt_obj, used_trk, iou_th, tracklets))
+        
+        # Build GT future vector
+        gt_future = to_vec(gt_obj["future"], input_dimension, hz)
 
         if match_idx is not None:
             used_trk.add(match_idx)
-            past = tracklets[match_idx]["tracklet"]
-            pred = to_vec(pred_means[match_idx], input_dimension, hz)  # [hz, D]
-            confidence = tracklets[match_idx]["confidence"]
-            bbox = tracklets[match_idx]["current_pos"]
-            category = tracklets[match_idx].get("category", "unknown")
+
+            # Past length: align GT past and tracker past to SAME length (most-recent first)
+            past_len = min(len(gt_obj["past"]), len(tracklets[match_idx]["tracklet"]))
+            gt_past_vec  = to_vec(gt_obj["past"], input_dimension, past_len, reverse=True)
+            trk_past_vec = to_vec(tracklets[match_idx]["tracklet"], input_dimension, past_len, reverse=True)
+
+            # Prediction means vector aligned to hz
+            pred_vec = to_vec(pred_means[match_idx], input_dimension, hz)
+
             matched.append({
-                "gid": gid, "match_idx": match_idx, "hz": hz,
-                "gt_past": gt_past, "gt_future": gt_pred,
-                "past": past, "bbox": bbox, "future": pred,
-                "category": category, "confidence": confidence
+                "gid": gid,
+                "match_idx": match_idx,
+                "hz": hz,
+                "gt_past": gt_past_vec,               # [past_len, D]
+                "tracklet": trk_past_vec,             # [past_len, D]
+                "gt_future": gt_future,               # [hz, D]
+                "future": pred_vec,                   # [hz, D]
+                "bbox": gt_obj["current_state"],      # use GT bbox as requested
+                "category": gt_obj.get("category", "unknown"),
+                "confidence": tracklets[match_idx].get("confidence", 1.0),
             })
         else:
+            # Count as missing when GT has no matching prediction/track
             missed.append({
-                "id": gid, "gt_past": gt_past,
+                "id": gid,
+                "gt_past": to_vec(gt_obj["past"], input_dimension, len(gt_obj["past"]), reverse=True),
                 "gt_bbox": gt_obj["current_state"],
-                "gt_future": gt_pred, "category": category
+                "gt_future": gt_future,
+                "category": gt_obj.get("category", "unknown"),
             })
 
-    # ---------------- false positives (unmatched tracker tracks) ---------------- #
+    # ---------------- false positives (unmatched prediction tracks) ---------------- #
     for i, trk in enumerate(tracklets):
         if i not in used_trk:
-            pred = to_vec(pred_means[i], input_dimension, pred_len)
-            category = trk.get("category", "unknown")
+            # Use all available steps of predicted means
+            pred_vec = to_vec(pred_means[i], input_dimension, pred_len)
             false_pos.append({
-                "id": trk["id"], "past": trk["tracklet"],
-                "bbox": trk["current_pos"], "future": pred,
-                "category": category
+                "id": trk["id"],
+                "tracklet": to_vec(trk["tracklet"], input_dimension, len(trk["tracklet"]), reverse=True),
+                "bbox": trk["current_pos"],
+                "future": pred_vec,
+                "category": trk.get("category", "unknown"),
+                "confidence": trk.get("confidence", 1.0),
             })
 
-    # predictor-only baseline (UNPACK to means, covs)
-    base_means, base_covs = predict_based_on_gt_past(vehicle, matched)
+    # ---------------- per-object ADE/FDE ---------------- #
+    ade_vals, fde_vals, label_stats = compute_label_metrics(matched)
 
-    # ---------------- per-object ADE/FDE (unchanged) ---------------- #
-    ade_list, fde_list, stats = compute_statistics(
-        matched, tracklets, pred_means, base_means, input_dimension
-    )
-
-    # ---------------- MSNE (element-wise; always computed) ---------------- #
+    # ---------------- MSNE (only if covariances provided) ---------------- #
     msne_vals = []
     eps = 1e-9
-    if len(matched) > 0:
+    if pred_covs is not None and len(matched) > 0:
         for m in matched:
             idx = m["match_idx"]
             hz  = m["hz"]
             gt  = m["gt_future"]     # [hz, D]
-            mu  = m["future"]        # [hz, D] (already built from pred_means)
+            mu  = m["future"]        # [hz, D]
 
-            # align covariance time order with mean order (dict keys sorted)
-            cov_dict = pred_covs[idx]                                  # {t: [D,D]}
-            ts_sorted = sorted(pred_means[idx])[:hz]                   # follow same ordering as to_vec(...)
+            cov_dict = pred_covs[idx]                       # {t: [D,D]}
+            ts_sorted = sorted(pred_means[idx].keys())[:hz] # same ordering used by to_vec on means
             cov_seq = np.array([cov_dict[t] for t in ts_sorted], dtype=np.float32)  # [hz, D, D]
 
             var = np.clip(np.diagonal(cov_seq, axis1=1, axis2=2), eps, None)        # [hz, D]
             z2 = ((gt - mu) ** 2) / var                                             # [hz, D]
-            msne_vals.append(float(np.mean(z2)))                                    # mean over time & dims
+            msne_vals.append(float(np.mean(z2)))
 
-    # ---------------- overall metrics ---------------- #
-    print(np.mean(msne_vals))
+    # ---------------- overall & by-category ---------------- #
     overall = {
         "num_matched": len(matched),
         "num_missed": len(missed),
         "num_false_positives": len(false_pos),
-        "ade": [], "fde": [],
-        "msne": float(np.mean(msne_vals)) if len(msne_vals) > 0 else float("nan"),
+        "ADE_mean": float(np.mean(ade_vals)) if ade_vals.size > 0 else float("nan"),
+        "FDE_mean": float(np.mean(fde_vals)) if fde_vals.size > 0 else float("nan"),
+        "MSNE_mean": float(np.mean(msne_vals)) if len(msne_vals) > 0 else float("nan"),
+        "sampling_hz": sampling,
+        "horizon_steps": horizon_steps,
+        "dim": input_dimension,
     }
-    for i in range(3):
-        overall["ade"].append(float(np.mean(ade_list[:, i])) if len(ade_list) > 0 else float("nan"))
-        overall["fde"].append(float(np.mean(fde_list[:, i])) if len(ade_list) > 0 else float("nan"))
+    by_cat = compute_by_category_statistics(label_stats, missed, false_pos)
 
-    # ---------------- category metrics (unchanged) ---------------- #
-    by_cat = compute_by_category_statistics(stats, missed, false_pos)
-
-    forecasts = {"matched": matched, "missed": missed, "false_positives": false_pos}
-    return forecasts, overall, by_cat
-
-
-
-"""
-def compute_frame_based_performance(predictions, tracklets, gt_predictions, vehicle, use_id=False, iou_th=0.75):
-    sampling, horizon, input_dimension, pred_len = extract_parameters(tracklets, predictions)
-    matched, missed, false_pos, used_trk = [], [], [], set()
-
-    # match GT to tracker
-    for gid, gt_obj in gt_predictions.items():
-        hz = min(pred_len, len(gt_obj["future"]))
-        category = gt_obj.get("category", "unknown")
-        gt_past = to_vec(gt_obj["past"], input_dimension, vehicle.tracking_history, reverse=True)
-        gt_pred = to_vec(gt_obj["future"], input_dimension, hz)
-
-        match_idx = find_matching_tracklet_by_id(gid, tracklets) if use_id \
-                    else find_matching_tracklet_by_iou(gt_obj, used_trk, iou_th, tracklets)
-
-        if match_idx is not None:
-            used_trk.add(match_idx)
-            past = tracklets[match_idx]["tracklet"]
-            pred = to_vec(predictions[match_idx], input_dimension, hz)
-            confidence = tracklets[match_idx]["confidence"]
-            bbox = tracklets[match_idx]["current_pos"]
-            category = tracklets[match_idx].get("category", "unknown")
-            matched.append({
-                "gid": gid, "match_idx": match_idx, "hz": hz,
-                "gt_past": gt_past, "gt_future": gt_pred,
-                "past": past, "bbox": bbox, "future": pred,
-                "category": category, "confidence": confidence
-            })
-        else:
-            missed.append({
-                "id": gid, "gt_past": gt_past,
-                "gt_bbox": gt_obj["current_state"],
-                "gt_future": gt_pred, "category": category
-            })
-
-    # false positives (unmatched tracker tracks)
-    for i, trk in enumerate(tracklets):
-        if i not in used_trk:
-            pred = to_vec(predictions[i], input_dimension, pred_len)
-            category = trk.get("category", "unknown")
-            false_pos.append({
-                "id": trk["id"], "past": trk["tracklet"],
-                "bbox": trk["current_pos"], "future": pred,
-                "category": category
-            })
-
-    # predictor-only baseline
-    base_predictions = predict_based_on_gt_past(vehicle, matched)
-
-    # per-object stats
-    ade_list, fde_list, stats = compute_statistics(
-        matched, tracklets, predictions, base_predictions, input_dimension
-    )
-
-    # overall metrics
-    overall = {
-        "num_matched": len(matched),
-        "num_missed": len(missed),
-        "num_false_positives": len(false_pos),
-        "ade": [], "fde": []
+    # ---------------- outputs ---------------- #
+    forecasts = {
+        "matched": matched,
+        "missed": missed,
+        "false_positives": false_pos,
+        "label_metrics": label_stats,   # for class evaluator accumulation
     }
-    for i in range(3):
-        overall["ade"].append(float(np.mean(ade_list[:, i])) if len(ade_list) > 0 else float("nan"))
-        overall["fde"].append(float(np.mean(fde_list[:, i])) if len(ade_list) > 0 else float("nan"))
-
-    # category metrics
-    by_cat = compute_by_category_statistics(stats, missed, false_pos)
-
-    forecasts = {"matched": matched, "missed": missed, "false_positives": false_pos}
-    return forecasts, overall, by_cat
-"""
+    metrics = {
+        "overall": overall,
+        "by_cat": by_cat,
+    }
+    return forecasts, metrics
