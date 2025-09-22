@@ -15,10 +15,10 @@ import os
 import pickle
 import logging
 
-from intelligent_vehicles.vehicles.basic_iv import BasicIntelligentVehicle 
-from intelligent_vehicles.vehicles.aggregating_iv import AggregatingIntelligentVehicle 
-from intelligent_vehicles.vehicles.broadcasting_iv import BroadcastingIntelligentVehicle 
-from intelligent_vehicles.vehicles.hybrid_iv import HybridIntelligentVehicle 
+from intelligent_vehicles.vehicles import BasicIV 
+from intelligent_vehicles.vehicles import AggregatingIV
+from intelligent_vehicles.vehicles import BroadcastingIV 
+from intelligent_vehicles.vehicles import HybridIV 
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def initialize_vehicle(sensors_data, vehicle_params):
     broadcaster_config = vehicle_params.get("broadcaster", None)
 
     if vehicle_type == "aggregating":
-        vehicle_obj = AggregatingIntelligentVehicle(
+        vehicle_obj = AggregatingIV(
             name=name,
             detector_config=detector_config,
             tracker_config=tracker_config,
@@ -88,7 +88,7 @@ def initialize_vehicle(sensors_data, vehicle_params):
             data=sensors_data
         )
     elif vehicle_type == "broadcasting":
-        vehicle_obj = BroadcastingIntelligentVehicle(
+        vehicle_obj = BroadcastingIV(
             name=name,
             detector_config=detector_config,
             tracker_config=tracker_config,
@@ -99,7 +99,7 @@ def initialize_vehicle(sensors_data, vehicle_params):
             data=sensors_data
         )
     elif vehicle_type == "hybrid":
-        vehicle_obj = HybridIntelligentVehicle(
+        vehicle_obj = HybridIV(
             name=name,
             detector_config=detector_config,
             tracker_config=tracker_config,
@@ -110,7 +110,7 @@ def initialize_vehicle(sensors_data, vehicle_params):
             data=sensors_data
         )
     else:
-        vehicle_obj = BasicIntelligentVehicle(
+        vehicle_obj = BasicIV(
             name=name,
             detector_config=detector_config,
             tracker_config=tracker_config,

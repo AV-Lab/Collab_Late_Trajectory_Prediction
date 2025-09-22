@@ -177,7 +177,7 @@ class TrajDataloader:
                 state = next(
                     ((np.array([s['x'], s['y'], s['z'],
                                s.get('length', 0), s.get('width', 0),
-                               s.get('height', 0), s['yaw']], dtype=np.float32), s['label'])
+                               s.get('height', 0), s['yaw'], s['occ_l1']], dtype=np.float32), s['label'])
                      for (ts, s) in seq if abs(ts - t) < 1e-3),
                     None)
     
@@ -188,8 +188,7 @@ class TrajDataloader:
                         'current_state': state[0],
                         'future': future
                     }
-                    
-    
+                       
             self.loaded_frames[t]['trajectories'] = frame_traj
 
         

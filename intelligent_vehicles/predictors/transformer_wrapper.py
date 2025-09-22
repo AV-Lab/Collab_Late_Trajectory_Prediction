@@ -14,7 +14,6 @@ from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
-from intelligent_vehicles.predictors.sequential.transformer_category import TransformerPredictorWithCategory
 from intelligent_vehicles.predictors.sequential.transformer import TransformerPredictor
 from intelligent_vehicles.predictors.dataloaders.seq_loader import SeqDataset
 from torch.utils.data import DataLoader

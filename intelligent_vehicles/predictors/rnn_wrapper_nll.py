@@ -14,7 +14,7 @@ from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
-from intelligent_vehicles.predictors.sequential.rnn_nll_segment_ramp import RNNPredictorNLL
+from intelligent_vehicles.predictors.sequential.rnn_nll import RNNPredictorNLL
 from intelligent_vehicles.predictors.dataloaders.seq_loader import SeqDataset
 from torch.utils.data import DataLoader
 from scipy.interpolate import interp1d
@@ -78,13 +78,13 @@ class RNNWrapperNLL:
             else:
                 valid_loader = DataLoader(SeqDataset(valid_path), batch_size=self.batch_size, shuffle=True)
                 
-        save_path = os.path.join(save_path, "lstm_predictor_nll_segment_ramp_impuls.pth")
+        save_path = os.path.join(save_path, "lstm_predictor_nll.pth")
         
         self.predictor.train(train_loader, valid_loader, save_path)
         self.predictor.evaluate(test_loader)
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~  predict  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    def predict(self, past_trajs, prediction_horizon):
+    def predict(self, past_trajs, prediction_horizon, prediction_sampling):
         """
         No resampling. Returns step-indexed dicts.
 
@@ -97,21 +97,21 @@ class RNNWrapperNLL:
             pred_means : list[dict]  # [{step: [x,y,...]}, ...] with step ∈ {0..H-1}
             pred_covs  : list[dict]  # [{step: [[..],[..],...]} per-step Σ_pos], same keys
         """
-        preds = self.predictor.predict(past_trajs, prediction_horizon)
-        # preds: list of {"mean": [H,D], "cov": [H,D,D]}
-        pred_means, pred_covs = [], []
 
-        for p in preds:
-            mean = np.asarray(p["mean"], dtype=np.float32)   # [H,D]
-            cov  = np.asarray(p["cov"],  dtype=np.float32)   # [H,D,D]
-            H, D = mean.shape
-            if cov.shape != (H, D, D):
-                raise ValueError(f"Covariance shape {cov.shape} does not match mean {(H, D)}")
+        pred_means, pred_covs = self.predictor.predict(past_trajs, prediction_horizon)
 
-            mean_dict = {int(k): mean[k].tolist() for k in range(H)}
-            cov_dict  = {int(k):  cov[k].tolist()  for k in range(H)}
-
-            pred_means.append(mean_dict)
-            pred_covs.append(cov_dict)
-
-        return pred_means, pred_covs
+        N_orig = pred_means[0].shape[0]
+        t_orig = np.linspace(0.0, prediction_horizon, N_orig)
+        
+        mean_trajs, cov_trajs = [], []
+        for mu, Sigma in zip(pred_means, pred_covs):
+            if mu.shape[0] != N_orig or Sigma.shape[0] != N_orig:
+                raise ValueError(f"Expected {N_orig} steps, got {mu.shape[0]} (mean) and {Sigma.shape[0]} (cov)")
+        
+            mean_dict = {float(f"{t:.3f}"): mu[i].tolist()     for i, t in enumerate(t_orig)}
+            cov_dict  = {float(f"{t:.3f}"): Sigma[i].tolist()  for i, t in enumerate(t_orig)}  # [pos_dim, pos_dim]
+        
+            mean_trajs.append(mean_dict)
+            cov_trajs.append(cov_dict)
+        
+        return mean_trajs, cov_trajs
