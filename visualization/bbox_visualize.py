@@ -23,6 +23,21 @@ from visualization.utils import create_box_mesh_and_edges, force_camera_pose
 
 logger = logging.getLogger(__name__)
 
+def _color_from_occ(occ: float | None) -> tuple[float, float, float]:
+    """Return an (R,G,B) in [0,1] based on occ_l1 thresholds."""
+    if occ is None:
+        occ = 0.0
+    try:
+        occ = float(occ)
+    except Exception:
+        occ = 0.0
+    if occ < 0.35:
+        return (1.0, 1.0, 0.0)      # yellow
+    elif occ <= 0.75:
+        return (1.0, 0.5, 0.0)      # orange
+    else:
+        return (1.0, 0.0, 0.0)      # red
+
 # ────────────────────────────────────────────────────────────────────────────
 # helper: cuboid with optional roof removal (unchanged behaviour)
 # ────────────────────────────────────────────────────────────────────────────
@@ -143,15 +158,16 @@ class BBoxVisualizer:
 
     def update_bboxes(self, detections: List[Dict]):
         for d in detections:
-            lbl = d.get("label", "obj")
-            if lbl not in self.label_colors:
-                self.label_colors[lbl] = tuple(np.random.rand(3))
+            colour = _color_from_occ(d.get("occ_score"))
+            #lbl = d.get("label", "obj")
+            #if lbl not in self.label_colors:
+            #    self.label_colors[lbl] = tuple(np.random.rand(3))
 
             self._add_box(
                 (d["x"], d["y"], d["z"]),
                 d["dx"], d["dy"], d["dz"],
                 d["yaw"],
-                self.label_colors[lbl],
+                colour,
             )
 
             # Heading arrow for agents only if flag is True
@@ -159,7 +175,7 @@ class BBoxVisualizer:
                 self._add_heading(
                     (d["x"], d["y"], d["z"]),
                     d["dx"], d["yaw"],
-                    self.label_colors[lbl],
+                    colour,
                 )
 
     # ........................................................ main render
