@@ -54,6 +54,87 @@ class Constants:
     OCCLUSION_EPS = 1e-2         # numerical margin for comparing occluder vs target distances
     OCCLUSION_VERTICAL_CHECK = True  # enable height-based vertical clearance check
     YAW_IN_DEGREES = False       # set True if label yaw is in degrees
+    
+    MIN_POINTS_IN_BOX = 10         # threshold for point support
+    KEEP_RADIUS_M = 100.0
+
+
+def _load_lidar_xyz(npz_path: str) -> Optional[np.ndarray]:
+    """Return Nx3 XYZ from a LiDAR .npz; tries common keys, falls back to arr_0."""
+    if not os.path.isfile(npz_path):
+        return None
+    try:
+        data = np.load(npz_path, allow_pickle=True)
+        for k in ('points', 'xyz', 'lidar', 'data', 'arr_0'):
+            if k in data:
+                arr = np.asarray(data[k])
+                break
+        else:
+            # take the first array-like in the file
+            key0 = list(data.keys())[0]
+            arr = np.asarray(data[key0])
+        arr = np.reshape(arr, (-1, arr.shape[-1]))
+        if arr.shape[-1] >= 3:
+            return arr[:, :3].astype(np.float64)
+    except Exception:
+        pass
+    return None
+
+
+def _count_points_in_box(points_xyz: np.ndarray, obj: dict, yaw_in_degrees: bool) -> int:
+    """Count LiDAR points inside the oriented 3D box (centered at obj[x,y,z])."""
+    if points_xyz is None or points_xyz.size == 0:
+        return 0
+    cx, cy, cz = obj['x'], obj['y'], obj['z']
+    L, W, H   = obj['length'], obj['width'], obj['height']
+    hl, hw, hh = 0.5*L, 0.5*W, 0.5*H
+    yaw = obj['yaw']
+    if yaw_in_degrees:
+        yaw = math.radians(yaw)
+
+    # translate to box center, rotate by -yaw around Z
+    P = points_xyz.copy()
+    P[:, 0] -= cx; P[:, 1] -= cy; P[:, 2] -= cz
+    c, s = math.cos(-yaw), math.sin(-yaw)
+    x_ =  c*P[:,0] - s*P[:,1]
+    y_ =  s*P[:,0] + c*P[:,1]
+    z_ =  P[:,2]  # yaw rotation about Z leaves Z unchanged
+
+    inside = (np.abs(x_) <= hl + 1e-6) & (np.abs(y_) <= hw + 1e-6) & (np.abs(z_) <= hh + 1e-3)
+    return int(np.count_nonzero(inside))
+
+
+
+def _filter_objects_by_points_and_radius(
+    objs: List[dict], ego_state: Optional[dict], points_xyz: Optional[np.ndarray],
+    min_pts: int, keep_radius: float, yaw_in_degrees: bool
+) -> List[dict]:
+    """Keep object if it has >= min_pts OR is within keep_radius of ego. Else drop."""
+    if not objs:
+        return []
+    ex = float(ego_state['x']) if ego_state else 0.0
+    ey = float(ego_state['y']) if ego_state else 0.0
+
+    kept = []
+    for o in objs:
+        dx = o['x'] - ex
+        dy = o['y'] - ey
+        dist = math.hypot(dx, dy)
+
+        # near ego? keep regardless of points
+        if dist <= keep_radius:
+            kept.append(o)
+            continue
+
+        # far → require point support
+        npts = _count_points_in_box(points_xyz, o, yaw_in_degrees)
+        o['lidar_pts'] = npts  # optional: store for inspection
+        if npts >= min_pts:
+            kept.append(o)
+        # else: drop
+    return kept
+
+
 
 
 # --------------------------
@@ -358,7 +439,12 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
                 'eps': Constants.OCCLUSION_EPS,
                 'vertical_check': Constants.OCCLUSION_VERTICAL_CHECK,
                 'yaw_in_degrees': Constants.YAW_IN_DEGREES,
-            }
+            },
+            # NEW: record filtering settings used during preprocessing
+            'filter': {
+                'min_points_in_box': getattr(Constants, 'MIN_POINTS_IN_BOX', 10),
+                'keep_radius_m': getattr(Constants, 'KEEP_RADIUS_M', 60.0),
+            },
         },
         'scenarios': {}
     }
@@ -394,12 +480,16 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
                                 'calibration': None
                             }
 
-    # Fill in the data and compute occlusion per frame
+    # Fill in the data, filter boxes, and compute occlusion per frame
     for scenario_name, agents_dict in scenarios.items():
         s_parts = scenario_name.split('/')
         s_part = f"{s_parts[0]}/{s_parts[1]}"  # e.g., "Town01/weather_1"
         scenario_folder = s_parts[2]           # e.g., "scenarioA"
+
         for agent, timestamps_dict in agents_dict.items():
+            dropped_total = 0
+            kept_total = 0
+
             for timestamp, data_dict in timestamps_dict.items():
                 frame_index = int(timestamp / step) + 1
                 frame_str = str(frame_index).zfill(3)  # NOTE: adjust if >999 frames
@@ -412,12 +502,15 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
                     )
                     data_dict['images'][sensor] = img_path
 
-                # LiDAR path
+                # LiDAR path (+ load XYZ for filtering)
                 lidar_path = (
                     f"{dataset_dir}/{s_part}/{agent}/{Constants.LIDAR_SENSOR}/{scenario_folder}/"
                     f"{scenario_folder}_{frame_str}.npz"
                 )
                 data_dict['lidar'] = lidar_path
+
+                # --- NEW: load LiDAR once per frame (XYZ Nx3) ---
+                lidar_xyz = _load_lidar_xyz(lidar_path)
 
                 # Labels / ego state
                 lbl_path = (
@@ -426,7 +519,21 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
                 )
                 objs, ego_st = parse_label_file(lbl_path)
 
-                # Compute occlusion (L1) from this agent's origin
+                # --- NEW: drop boxes with weak point support AND far from ego ---
+                before = len(objs)
+                objs = _filter_objects_by_points_and_radius(
+                    objs=objs,
+                    ego_state=ego_st,
+                    points_xyz=lidar_xyz,
+                    min_pts=Constants.MIN_POINTS_IN_BOX,
+                    keep_radius=Constants.KEEP_RADIUS_M,
+                    yaw_in_degrees=Constants.YAW_IN_DEGREES,
+                )
+                after = len(objs)
+                kept_total += after
+                dropped_total += (before - after)
+
+                # Compute occlusion (L1) from this agent's origin on the filtered set
                 occ_map = compute_l1_occlusion_for_frame(
                     objs, ego_st,
                     K=Constants.OCCLUSION_RAYS_K,
@@ -448,13 +555,15 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
                 )
                 data_dict['calibration'] = parse_calibration_file(calib_path)
 
-            print(f"{scenario_name} :: {agent} processed")
+            print(f"{scenario_name} :: {agent} processed "
+                  f"(kept {kept_total}, dropped {dropped_total})")
 
     data['scenarios'] = scenarios
     output_pickle_path = os.path.join(dataset_dir, f"{prefix}_data.pkl")
     with open(output_pickle_path, 'wb') as f:
         pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"Saved dataset to {output_pickle_path}")
+
 
 
 if __name__ == '__main__':

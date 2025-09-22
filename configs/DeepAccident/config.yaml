@@ -13,25 +13,26 @@ ego_vehicle:
   parameters:
     fps: 10
     tracking_history: 20 # bbox to save 
+    keep_track: 3
     prediction_horizon: 2
     prediction_frequency: 10
     prediction_sampling: 10
     device: "cuda:0"
 
   detector:
-    name: "gt_noise"    # [gt, centerpoint]
-    det_path: "data/detections/DeepAccident/noisy_observations_kf/val/other_vehicle"
+    name: "gt_occ"    # [gt, gt_occ, centerpoint]
+    #det_path: "data/detections/DeepAccident/noisy_observations_kf/val/other_vehicle"
 
   tracker:
-    name: "gt_noise"
+    name: "gt"
 
   predictor:
     name: "lstm_nll"
-    mode: "eval"
-    checkpoint: "checkpoints/prediction/10_20_vx_vy/other_vehicle/lstm_predictor_nll_segment_ramp.pth"
+    mode: "train"
+    checkpoint: "checkpoints/prediction/10_20_vx_vy/other_vehicle/lstm_predictor_nll.pth"
     #mode: "train" #["train"] 
-    #data_path: "data/prediction/DeepAccident/10_20/other_vehicle"
-    #save_path: "checkpoints/prediction/10_20_vx_vy/other_vehicle"
+    data_path: "data/prediction/DeepAccident/10_20/other_vehicle"
+    save_path: "checkpoints/prediction/10_20_vx_vy/other_vehicle"
 
   broadcaster:
     broadcasting_frequency: 10
@@ -47,13 +48,14 @@ vehicles:
     parameters:
       fps: 10 #frames per second
       tracking_history: 10 # bbox to save 
+      keep_track: 3
       prediction_horizon: 2 # seconds
       prediction_frequency: 10 
       prediction_sampling: 10
       device: "cuda:0" # options [cuda, cpu, cuda:1]
     
     detector:
-      name: "gt"    # [gt, gt_noise, centerpoint] 
+      name: "gt"    # [gt, centerpoint] 
       #det_path: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
     
     tracker:
@@ -82,6 +84,7 @@ vehicles:
     parameters:
       fps: 10
       tracking_history: 10 # bbox to save 
+      keep_track: 3
       prediction_horizon: 2
       prediction_frequency: 10
       prediction_sampling: 10
@@ -112,6 +115,7 @@ vehicles:
     parameters:
       fps: 10
       tracking_history: 10 # bbox to save 
+      keep_track: 3
       prediction_horizon: 2
       prediction_frequency: 10
       prediction_sampling: 10

@@ -9,7 +9,7 @@ Created on Mon Jul  8 14:11:22 2024
 import torch
 import numpy as np
 
-class AggregatingIntelligentVehicle:
+class AggregatingIV:
     """ 
     Intelligent agent class.
     

@@ -5,9 +5,9 @@ import sys
 
 
 SUPPORTED_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
-SUPPORTED_DETECTORS = {"gt", "gt_noise", "centerpoint"}
+SUPPORTED_DETECTORS = {"gt", "gt_occ", "centerpoint"}
 SUPPORTED_PREDICTORS = {"lstm", "lstm_nll", "transformer"}
-SUPPORTED_TRACKERS = {"gt", "gt_noise", "ab3dmot"}
+SUPPORTED_TRACKERS = {"gt", "ab3dmot"}
 VALID_MODES = {"train", "eval"}
 
 
@@ -111,7 +111,7 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, fps, logger: l
         # for detector you either need to provide detection and load them in wrapper
         # or you provide a checkpoint and in wrapper load from it
         # only if detector is gt, the checkpoint field can be omitted 
-        if det_name != "gt":
+        if not(det_name == "gt" or det_name == "gt_occ"):
             if "det_path" not in detector:
                 msg = f"Vehicle '{vehicle_key}' detector, you must provide checkpoint or detections folder path)."
                 logger.error(msg)

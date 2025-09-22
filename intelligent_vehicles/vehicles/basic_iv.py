@@ -17,7 +17,7 @@ from intelligent_vehicles.detectors.initialize import initialize_detector
 from intelligent_vehicles.trackers.initialize import initialize_tracker
 from intelligent_vehicles.predictors.initialize import initialize_predictor
 
-class BasicIntelligentVehicle:
+class BasicIV:
     """ 
     Intelligent agent class.
     
@@ -51,15 +51,7 @@ class BasicIntelligentVehicle:
         else:
             detections = self.detector.detect(frame_data)
             
-        is_tuple = True if type(detections) is tuple else False
-        if is_tuple:
-            detected = detections[0]
-            missing = detections[1]
-        else:
-            detected = detections
-            
-        detected = self.ego_motion_compensation(detected, calibration)
-        detections = (detected, missing) if is_tuple else detected   
+        detections = self.ego_motion_compensation(detections, calibration)
         
         return detections 
 
@@ -70,7 +62,7 @@ class BasicIntelligentVehicle:
     
     def run_predictor(self, tracklets):
         past_trajs = self.predictor.format_input(tracklets)
-        future_trajs = self.predictor.predict(past_trajs, self.prediction_horizon) 
+        future_trajs = self.predictor.predict(past_trajs, self.prediction_horizon, self.prediction_sampling) 
         return future_trajs
     
     def reset(self):
@@ -114,6 +106,7 @@ class BasicIntelligentVehicle:
         self.next_prediction_time = self.starting_time + 1.0 # delay by 1 second to make sure we have track history
         self.fps = parameters["fps"]
         self.tracking_history = parameters["tracking_history"]
+        self.keep_track = parameters["keep_track"]
         self.prediction_horizon = parameters["prediction_horizon"]
         self.prediction_frequency = parameters["prediction_frequency"]
         self.prediction_sampling = parameters["prediction_sampling"]
@@ -130,6 +123,7 @@ class BasicIntelligentVehicle:
         self._init_detector(detector_config)
         
         tracker_config["tracking_history"] = self.tracking_history
+        tracker_config["keep_track"] = self.keep_track
         self._init_tracker(tracker_config)
         
         predictor_config["device"] = self.device
@@ -153,11 +147,11 @@ class BasicIntelligentVehicle:
             calibration = frame_data["calibration"]
             point_cloud = frame_data["lidar"]
             trajectories = frame_data["trajectories"]
-            
+           
             # Run detection
             detections = self.run_detector(frame_data, t, calibration, scenario)
         
-            # Update the tracker -> tracklets is numpy str array of 3D boxes [x, y, z, theta, l, w, h,s, obj_class]
+            # Update the tracker 
             tracklets = self.run_tracker(detections)
 
             # Check if it's time for prediction ask tracker for active tracklets and run predict

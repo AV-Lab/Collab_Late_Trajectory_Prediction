@@ -12,11 +12,9 @@ from parser import (load_config,
                     parse_deepaccident_config,
                     parse_opv2v_config,
                     parse_v2v4real_config)
-from intelligent_vehicles.initialize import (initialize_vehicle, 
-                                            initialize_vehicles)
+from intelligent_vehicles.initialize import initialize_vehicles
 
 from visualization.bbox_visualize import BBoxVisualizer
-from visualization.tracker_visualize import TrackerVisualizer
 from visualization.trajectory_visualize import PredictorVisualizer 
 from evaluation.frame_based_metrics import compute_frame_based_performance  
 from evaluation.prediction_evaluation import Evaluator              
@@ -100,8 +98,8 @@ if __name__ == '__main__':
             response = ego_vehicle.run(t_global, scenario)
             if response is not None:
                 predictions, tracklets, trajectories, point_cloud, ego_pose, calibration = response
-                forecasts, metrics, by_cat = compute_frame_based_performance(predictions, tracklets, trajectories, ego_vehicle, use_id=True)
-                evaluator.accumulate(metrics, by_cat)  
+                forecasts, metrics = compute_frame_based_performance(predictions, tracklets, trajectories, use_id=False, iou_th=0.75)
+                evaluator.accumulate(metrics)  
                 
                 #visualizer.visualize_predictions(point_cloud, tracklets, predictions, ego_pose, calibration, transform_to_global=True)
                 #point_cloud, detections, ego_pose = response
