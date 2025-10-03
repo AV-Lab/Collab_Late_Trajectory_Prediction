@@ -19,6 +19,22 @@ from visualization.trajectory_visualize import PredictorVisualizer
 from evaluation.frame_based_metrics import compute_frame_based_performance  
 from evaluation.prediction_evaluation import Evaluator              
 import numpy as np
+import threading, zmq
+_PROXY_THREAD = None
+logger = setup_logging("collaboration.log")
+
+def ensure_proxy_started(channel_root: str):
+    global _PROXY_THREAD
+    if _PROXY_THREAD and _PROXY_THREAD.is_alive():
+        return
+    ctx = zmq.Context.instance()
+    xsub = ctx.socket(zmq.XSUB); xsub.bind(f"{channel_root}.in")
+    xpub = ctx.socket(zmq.XPUB); xpub.bind(f"{channel_root}.out")
+    xsub.setsockopt(zmq.RCVHWM, 100)
+    xpub.setsockopt(zmq.SNDHWM, 100)
+    _PROXY_THREAD = threading.Thread(target=zmq.proxy, args=(xsub, xpub), daemon=True)
+    _PROXY_THREAD.start()
+    logger.info("[Proxy] XSUB bound %s.in | XPUB bound %s.out", channel_root, channel_root)
 
 def parse_configuration(config_path):
     try:
@@ -57,16 +73,18 @@ def parse_configuration(config_path):
 
 if __name__ == '__main__':
     
+    channel_root = "ipc:///tmp/prediction"   # use tcp://127.0.0.1:5556/.in .out 
+    ensure_proxy_started(channel_root)
+    
     config_path = "configs/DeepAccident/config.yaml"
-    logger = setup_logging("collaboration.log")
-
     logger.info(f"Loading configuration from: {config_path}")
     configuration = parse_configuration(config_path)
     logger.info("Config parsed successfully")
     
     ego_vehicle, vehicles = initialize_vehicles(configuration['data'],
                                                 configuration["ego_vehicle"],
-                                                configuration["vehicles"])  
+                                                configuration["vehicles"],
+                                                channel_root)  
     scenarios = ego_vehicle.test_loader.extract_all_scenarios()
     print("scenarios ready")
        
@@ -93,13 +111,13 @@ if __name__ == '__main__':
         
         # run global_clock
         while t_global < simulation_time:
-            #for iv in vehicles:
-            #    iv.run(t_global)
+            for iv in vehicles:
+                iv.run(t_global)
             response = ego_vehicle.run(t_global, scenario)
             if response is not None:
                 predictions, tracklets, trajectories, point_cloud, ego_pose, calibration = response
-                forecasts, metrics = compute_frame_based_performance(predictions, tracklets, trajectories, use_id=False, iou_th=0.75)
-                evaluator.accumulate(metrics)  
+                ##forecasts, metrics = compute_frame_based_performance(predictions, tracklets, trajectories, use_id=False, iou_th=0.75)
+                ##evaluator.accumulate(metrics)  
                 
                 #visualizer.visualize_predictions(point_cloud, tracklets, predictions, ego_pose, calibration, transform_to_global=True)
                 #point_cloud, detections, ego_pose = response
@@ -108,7 +126,6 @@ if __name__ == '__main__':
             t_global += dt
             
         evaluator.end_scenario(scenario)  # NEW
-    
     evaluator.log_overall(len(scenarios))  # NEW
     
     #visualizer.close()

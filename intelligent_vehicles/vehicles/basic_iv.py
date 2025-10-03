@@ -8,6 +8,7 @@ Created on Mon Jul  8 14:11:22 2024
 
 import torch
 import os
+import time
 import numpy as np
 import logging
 logger = logging.getLogger(__name__)
@@ -16,6 +17,8 @@ from intelligent_vehicles.vehicles.dataloader import TrajDataloader
 from intelligent_vehicles.detectors.initialize import initialize_detector
 from intelligent_vehicles.trackers.initialize import initialize_tracker
 from intelligent_vehicles.predictors.initialize import initialize_predictor
+from intelligent_vehicles.graphs.initialize import initialize_object_graph
+from intelligent_vehicles.late_fusion import GPFuser
 
 class BasicIV:
     """ 
@@ -44,15 +47,18 @@ class BasicIV:
     def _init_predictor(self, predictor_config):
         print(f"Initializing predictor with config: {predictor_config}")
         self.predictor = initialize_predictor(predictor_config)
+        
+    def _init_object_graph(self):
+        print(f"Initializing object graph")
+        self.object_graph = initialize_object_graph()
     
-    def run_detector(self, frame_data, t, calibration, scenario=None):
+    def run_detector(self, t, frame_data, calibration, scenario=None):
         if hasattr(self.detector, "load_detections") and self.detector.load_detections:
             detections = self.detector.detect(scenario, t)
         else:
             detections = self.detector.detect(frame_data)
             
         detections = self.ego_motion_compensation(detections, calibration)
-        
         return detections 
 
     def run_tracker(self, detections):
@@ -62,12 +68,30 @@ class BasicIV:
     
     def run_predictor(self, tracklets):
         past_trajs = self.predictor.format_input(tracklets)
-        future_trajs = self.predictor.predict(past_trajs, self.prediction_horizon, self.prediction_sampling) 
-        return future_trajs
+        mean_trajs, cov_trajs = self.predictor.predict(past_trajs, 
+                                                       self.prediction_horizon, 
+                                                       self.prediction_sampling) 
+        
+        # wall-clock “now” in milliseconds (integer)
+        pred_ts_ms = time.time_ns() 
+        
+        self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
+        
+        # fuse predictions
+        #logger.info(f"Run fusion, current state of the graph: {self.object_graph}")
+        preds_with_pools = self.object_graph.extract_pools()
+        fused_predictions = GPFuser.fuse(preds_with_pools)
+        
+        # update the graph and reset pools 
+        self.object_graph.updtae_predictions(fused_predictions)
+        self.object_graph.empty_pools()
+        
+        #logger.info(f"Return fused predictions: {self.object_graph}")
+        return fused_predictions
     
     def reset(self):
         self.tracker.reset()
-        
+        self.object_graph.reset()
     
     def ego_motion_compensation(self, detections, calibration):
         """
@@ -93,7 +117,14 @@ class BasicIV:
     
         return compensated
         
-    def __init__(self, name, detector_config, tracker_config, predictor_config, parameters, sensors, data):
+    def __init__(self, 
+                 name, 
+                 detector_config, 
+                 tracker_config, 
+                 predictor_config, 
+                 parameters, 
+                 sensors, 
+                 data):
     
         self.name = name
         self.cur_location = None
@@ -116,6 +147,7 @@ class BasicIV:
             self.train_loader = self._init_dataloader(data["train"], sensors, self.fps)
         if "valid" in data:
             self.valid_loader = self._init_dataloader(data["valid"], sensors, self.fps)
+            
         test = data["test"] if "test" in data else data["valid"]
         self.test_loader = self._init_dataloader(test, sensors, self.fps)
         
@@ -128,13 +160,15 @@ class BasicIV:
         
         predictor_config["device"] = self.device
         self._init_predictor(predictor_config)
+        
+        self._init_object_graph()
     
     
     def run(self, t, scenario=None):
         # Check if it's time for observation
         if abs(t - self.next_observation_time) <= self.delta:
-            self.next_observation_time += 1.0 / self.fps
             frame_data = self.test_loader.get_frame_data(t)
+            self.next_observation_time += 1.0 / self.fps
             
             if frame_data == None:
                 logger.info(f"Vehicle {self.name} left the scene.")
@@ -145,23 +179,27 @@ class BasicIV:
             # if we recived observation 
             ego_state = frame_data["ego_state"]
             calibration = frame_data["calibration"]
+            self.cur_location = [{"x": ego_state["x"], 
+                                  "y": ego_state["y"], 
+                                  "z": ego_state["z"], 
+                                  "yaw": ego_state["yaw"]}]
+            self.cur_location = self.ego_motion_compensation(self.cur_location, calibration)[0] 
+            
+            
             point_cloud = frame_data["lidar"]
             trajectories = frame_data["trajectories"]
            
             # Run detection
-            detections = self.run_detector(frame_data, t, calibration, scenario)
+            detections = self.run_detector(t, frame_data, calibration, scenario)
         
             # Update the tracker 
             tracklets = self.run_tracker(detections)
 
             # Check if it's time for prediction ask tracker for active tracklets and run predict
-            predictions = None
+            response = None
             if abs(t - self.next_prediction_time) <= self.delta: 
+                predictions = self.run_predictor(tracklets)            
+                response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
                 self.next_prediction_time += 1.0 / self.prediction_frequency  
-                predictions = self.run_predictor(tracklets)
             
-                return (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
-            
-            #return (point_cloud, detections, ego_state)
-            
-            return None
+            return response

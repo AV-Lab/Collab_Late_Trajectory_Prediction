@@ -9,7 +9,7 @@ dataset:
 
 ego_vehicle:
   name: "other_vehicle"
-  type: "basic"
+  type: "aggregating"
   parameters:
     fps: 10
     tracking_history: 20 # bbox to save 
@@ -28,15 +28,18 @@ ego_vehicle:
 
   predictor:
     name: "lstm_nll"
-    mode: "train"
+    mode: "eval"
     checkpoint: "checkpoints/prediction/10_20_vx_vy/other_vehicle/lstm_predictor_nll.pth"
     #mode: "train" #["train"] 
-    data_path: "data/prediction/DeepAccident/10_20/other_vehicle"
-    save_path: "checkpoints/prediction/10_20_vx_vy/other_vehicle"
+    #data_path: "data/prediction/DeepAccident/10_20/other_vehicle"
+    #save_path: "checkpoints/prediction/10_20_vx_vy/other_vehicle"
 
   broadcaster:
     broadcasting_frequency: 10
-    broadcasting_range: 50
+    topic: "pred"
+    
+  listener:
+    topic: "pred"
 
   sensors:
     - "lidar01"
@@ -44,7 +47,7 @@ ego_vehicle:
 vehicles:
   vehicle_1:
     name: "ego_vehicle"
-    type: "basic"  # [basic, aggregating, broadcasting, hybrid]
+    type: "broadcasting"  # [basic, aggregating, broadcasting, hybrid]
     parameters:
       fps: 10 #frames per second
       tracking_history: 10 # bbox to save 
@@ -63,16 +66,15 @@ vehicles:
       # No mode or checkpoint needed, as it's algorithmic
     
     predictor:
-      name: "lstm"   # [lstm, lstm_cat, transformer, transformer_cat]
+      name: "lstm_nll"   # [lstm, lstm_cat, transformer, transformer_cat]
       mode: "eval"
-      checkpoint: "checkpoints/prediction/10_20_vx_vy/ego_vehicle/lstm_predictor.pth"
-      #mode: "train" #["train"] 
+      checkpoint: "checkpoints/prediction/10_20_vx_vy/ego_vehicle/lstm_predictor_nll.pth"
       #data_path: "data/prediction/DeepAccident/10_20/ego_vehicle"
-      #save_path: "checkpoints/prediction/10_20_vx_vy_vyaw/ego_vehicle/"
+      #save_path: "checkpoints/prediction/10_20_vx_vy/ego_vehicle/"
     
     broadcaster:
       broadcasting_frequency: 10
-      broadcasting_range: 50
+      topic: "pred"
     
     sensors:
       - "lidar01"
@@ -80,7 +82,7 @@ vehicles:
 
   vehicle_2:
     name: "ego_vehicle_behind"
-    type: "basic"
+    type: "broadcasting"
     parameters:
       fps: 10
       tracking_history: 10 # bbox to save 
@@ -97,13 +99,15 @@ vehicles:
       name: "gt"
     
     predictor:
-      name: "lstm"
+      name: "lstm_nll"
       mode: "eval"
-      checkpoint: "checkpoints/prediction/10_20_vx_vy/ego_vehicle_behind/lstm_predictor.pth"
+      checkpoint: "checkpoints/prediction/10_20_vx_vy/ego_vehicle_behind/lstm_predictor_nll.pth"
+      #data_path: "data/prediction/DeepAccident/10_20/ego_vehicle_behind"
+      #save_path: "checkpoints/prediction/10_20_vx_vy/ego_vehicle_behind/"
     
     broadcaster:
-      broadcasting_frequency: 10
-      broadcasting_range: 50
+      broadcasting_frequency: 5
+      topic: "pred"
     
     sensors:
       - "lidar01"
@@ -128,13 +132,15 @@ vehicles:
       name: "gt"
 
     predictor:
-      name: "lstm"
+      name: "lstm_nll"
       mode: "eval"
-      checkpoint: "checkpoints/prediction/10_20_vx_vy/other_vehicle_behind/lstm_predictor.pth"
+      checkpoint: "checkpoints/prediction/10_20_vx_vy/other_vehicle_behind/lstm_predictor_nll.pth"
+      #data_path: "data/prediction/DeepAccident/10_20/other_vehicle_behind"
+      #save_path: "checkpoints/prediction/10_20_vx_vy/other_vehicle_behind/"
 
     broadcaster:
       broadcasting_frequency: 10
-      broadcasting_range: 50
+      topic: "pred"
 
     sensors:
       - "lidar01"

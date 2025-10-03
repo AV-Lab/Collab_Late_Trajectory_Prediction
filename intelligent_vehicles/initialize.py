@@ -66,7 +66,7 @@ def extract_vehicles_sensors_data(data, ivs):
     return sensors_data
     
 
-def initialize_vehicle(sensors_data, vehicle_params):
+def initialize_vehicle(sensors_data, vehicle_params, channel_root):
     logger.info(f"Initializing vehicle '{vehicle_params['name']}' of type '{vehicle_params['type']}'.")
     vehicle_type = vehicle_params["type"]
     name = vehicle_params["name"]
@@ -76,6 +76,7 @@ def initialize_vehicle(sensors_data, vehicle_params):
     parameters = vehicle_params["parameters"]
     sensors = vehicle_params["sensors"]
     broadcaster_config = vehicle_params.get("broadcaster", None)
+    listener_config = vehicle_params.get("listener", None)
 
     if vehicle_type == "aggregating":
         vehicle_obj = AggregatingIV(
@@ -83,9 +84,11 @@ def initialize_vehicle(sensors_data, vehicle_params):
             detector_config=detector_config,
             tracker_config=tracker_config,
             predictor_config=predictor_config,
+            listener_config=listener_config,
             parameters=parameters,
             sensors=sensors,
-            data=sensors_data
+            data=sensors_data,
+            channel_root=channel_root
         )
     elif vehicle_type == "broadcasting":
         vehicle_obj = BroadcastingIV(
@@ -96,7 +99,8 @@ def initialize_vehicle(sensors_data, vehicle_params):
             broadcaster_config=broadcaster_config,
             parameters=parameters,
             sensors=sensors,
-            data=sensors_data
+            data=sensors_data,
+            channel_root=channel_root
         )
     elif vehicle_type == "hybrid":
         vehicle_obj = HybridIV(
@@ -105,9 +109,11 @@ def initialize_vehicle(sensors_data, vehicle_params):
             tracker_config=tracker_config,
             predictor_config=predictor_config,
             broadcaster_config=broadcaster_config,
+            listener_config=listener_config,
             parameters=parameters,
             sensors=sensors,
-            data=sensors_data
+            data=sensors_data,
+            channel_root=channel_root
         )
     else:
         vehicle_obj = BasicIV(
@@ -123,18 +129,18 @@ def initialize_vehicle(sensors_data, vehicle_params):
     return vehicle_obj
 
 
-def initialize_vehicles(data, ego_vehicle_dict, vehicles_dict):
+def initialize_vehicles(data, ego_vehicle_dict, vehicles_dict, channel_root):
     logger.info("Extracting vehicles sensors data from pickle files.")
     ivs = [iv_name["name"] for iv_name in vehicles_dict.values()]
     ivs.extend([ego_vehicle_dict["name"]])
     sensors_data = extract_vehicles_sensors_data(data, ivs)
     logger.info("Initializing ego vehicle.")
-    ego_vehicle = initialize_vehicle(sensors_data[ego_vehicle_dict["name"]], ego_vehicle_dict)
+    ego_vehicle = initialize_vehicle(sensors_data[ego_vehicle_dict["name"]], ego_vehicle_dict, channel_root)
     
     ivs = []
     for vehicle_id, vehicle_params in vehicles_dict.items():
         logger.info(f"Initializing vehicle '{vehicle_params['name']}' with ID '{vehicle_id}'.")
-        iv_obj = initialize_vehicle(sensors_data[vehicle_params["name"]], vehicle_params)
+        iv_obj = initialize_vehicle(sensors_data[vehicle_params["name"]], vehicle_params, channel_root)
         ivs.append(iv_obj)
     logger.info("All vehicles initialized successfully.")
     return ego_vehicle, ivs

@@ -55,10 +55,14 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, fps, logger: l
         raise ValueError(msg)
 
     # Required modules based on vehicle type
-    must_have_broadcaster = (vehicle_type == "broadcasting" or vehicle_type == "hybrid")
     required_modules = ["detector", "tracker", "predictor"]
+    must_have_broadcaster = (vehicle_type == "broadcasting" or vehicle_type == "hybrid")
     if must_have_broadcaster:
         required_modules.append("broadcaster")
+    must_have_listener = (vehicle_type == "aggregating" or vehicle_type == "hybrid")
+    if must_have_listener:
+        required_modules.append("listener")
+
 
     for module in required_modules:
         if module not in vehicle_dict:
@@ -212,11 +216,24 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, fps, logger: l
             msg = f"Vehicle '{vehicle_key}' broadcaster missing 'broadcasting_frequency'."
             logger.error(msg)
             raise ValueError(msg)
-        if "broadcasting_range" not in broadcaster:
-            msg = f"Vehicle '{vehicle_key}' broadcaster missing 'broadcasting_range'."
+        if "topic" not in broadcaster:
+            msg = f"Vehicle '{vehicle_key}' broadcaster missing 'broadcasting topic'."
             logger.error(msg)
             raise ValueError(msg)
-            
+
+#_________________________________________________________________________________________________
+
+    # Validate 'listener' if must_have_listener
+    if must_have_listener:
+        listener = vehicle_dict["listener"]
+        if not isinstance(listener, dict):
+            msg = f"Vehicle '{vehicle_key}' listener must be a dictionary."
+            logger.error(msg)
+            raise ValueError(msg)
+        if "topic" not in listener:
+            msg = f"Vehicle '{vehicle_key}' listener missing 'listener topic'."
+            logger.error(msg)
+            raise ValueError(msg)            
 #_________________________________________________________________________________________________
 
 
