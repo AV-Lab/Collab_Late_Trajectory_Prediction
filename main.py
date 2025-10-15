@@ -91,10 +91,14 @@ if __name__ == '__main__':
     # global clock 
     simulation_time = 10.0  # total sim time in seconds
     dt = 0.02               # step in seconds
-
+    
+    # parameters 
+    input_size = ego_vehicle.predictor.predictor.input_size
+    pred_len = ego_vehicle.predictor.predictor.prediction_horizon
+    past_len = ego_vehicle.predictor.predictor.observation_length
+    
     evaluator = Evaluator(logger=logger)  # NEW
-    #visualizer = BBoxVisualizer()
-    #visualizer = PredictorVisualizer()
+    #viz = PredictorVisualizer()
      
     for scenario in scenarios:
         # first preload all data for scenario
@@ -116,17 +120,32 @@ if __name__ == '__main__':
             response = ego_vehicle.run(t_global, scenario)
             if response is not None:
                 predictions, tracklets, trajectories, point_cloud, ego_pose, calibration = response
-                ##forecasts, metrics = compute_frame_based_performance(predictions, tracklets, trajectories, use_id=False, iou_th=0.75)
-                ##evaluator.accumulate(metrics)  
+                forecasts, metrics = compute_frame_based_performance(predictions, 
+                                                                     tracklets, 
+                                                                     trajectories, 
+                                                                     input_size, 
+                                                                     pred_len, 
+                                                                     past_len)
                 
-                #visualizer.visualize_predictions(point_cloud, tracklets, predictions, ego_pose, calibration, transform_to_global=True)
-                #point_cloud, detections, ego_pose = response
-                #visualizer.visualize(point_cloud, detections, ego_pose)
-            
+
+                evaluator.accumulate(metrics)  
+                
+                #viz.visualize_forecasts(
+                #    point_cloud=point_cloud,
+                #    ego_pose=ego_pose,
+                #    calib=calibration,
+                #    forecasts=forecasts,
+                #    show_past=True,
+                #    show_future=True,
+                #    show_missing=True,      # include missed
+                #    show_false=True,        # include false positives
+                #    sigma_scale=1.0
+                #)
+
             t_global += dt
             
-        evaluator.end_scenario(scenario)  # NEW
-    evaluator.log_overall(len(scenarios))  # NEW
+        evaluator.end_scenario(scenario)  
+    evaluator.log_overall(len(scenarios))  
     
     #visualizer.close()
          

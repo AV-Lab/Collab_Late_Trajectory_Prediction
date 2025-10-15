@@ -41,9 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 class Broadcaster:
-    def __init__(self, root: str, topic: str,
-                 compress_min_bytes: int = 512,
-                 zstd_level: int = 6):
+    def __init__(self, root: str, topic: str, compress_min_bytes: int = 1500, zstd_level: int = 6):
         """
         Args:
             root: channel root, e.g. "ipc:///tmp/prediction"
@@ -163,12 +161,13 @@ class Broadcaster:
         series = self._extract_ordered_series(pred_obj["pred"], pred_obj["cov"])
 
         # quantize
-        tt = pred_obj["timestamp"] // 1_000_000
+        tt = pred_obj["timestamp"] 
         t_ms = self._quantize_times(series["t"])
         P = self._quantize_offsets_xy(base_xy, series["xy"], cm_per_unit=100.0)   # centimeters
         V = self._quantize_diag_cov(series["vv"], scale=100.0)                    # centi m^2
 
         return {
+            "id": str(entry["id"]),
             "c": cat,
             "b": [float(base_xy[0]), float(base_xy[1])],
             "tt": tt,

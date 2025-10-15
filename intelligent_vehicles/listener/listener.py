@@ -52,6 +52,7 @@ class Listener:
         pred_ts_ms = int(entry.get("tt", 0))  # <-- include prediction timestamp (ms)
 
         return {
+            "id":entry["id"],
             "category": str(entry["c"]),
             "cur_location": [float(bx), float(by)],
             "prediction": {

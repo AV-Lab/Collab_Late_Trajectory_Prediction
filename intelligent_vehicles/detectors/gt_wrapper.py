@@ -65,9 +65,9 @@ class GTOccWrapper:
 
     def __init__(self, seed: int = 1337):
         logger.info("Detections come from ground truth (occlusion-aware; xy noise only).")
-        self.occ_mid_low = 0.35
-        self.occ_mid_high = 0.75
-        self.occ_high_drop = 0.75
+        self.occ_mid_low = 0.15
+        self.occ_mid_medium = 0.3
+        self.occ_mid_high = 0.5
         self.occ_mid_max_pdrop = 0.5
 
         self.noise_pos_base_m = 0.02
@@ -76,29 +76,33 @@ class GTOccWrapper:
 
         self.rng = np.random.default_rng(seed)
 
+ 
     def _apply_mid_occ(self, det: Dict, occ: float, ego: Optional[Dict]) -> Optional[Dict]:
-        """Medium-occlusion policy: probabilistic drop or minor xy noise."""
-        # normalize occ within [mid_low, mid_high] -> t in [0, 1]
-        t = (occ - self.occ_mid_low) / (self.occ_mid_high - self.occ_mid_low)
-        t = max(0.0, min(1.0, t))
-
-        # stochastic drop with prob p_drop = t * max_pdrop
-        p_drop = t * self.occ_mid_max_pdrop
-        if self.rng.random() < p_drop:
-            return None
-
-        # small xy noise that grows with occlusion (and optionally with distance)
-        ex = float(ego['x']) if ego else 0.0
-        ey = float(ego['y']) if ego else 0.0
-        dist = math.hypot(det['x'] - ex, det['y'] - ey)
+        """
+        Mid-occlusion policy with two bands:
+          A) [occ_mid_low, occ_mid_medium): noise only (no drop)
+          B) [occ_mid_medium, occ_mid_high]: probabilistic drop + noise
+        """
+        # between 0.15 and 0.3 add noise
+        if occ < self.occ_mid_medium:
+            denom = (self.occ_mid_medium - self.occ_mid_low)
+            t = (occ - self.occ_mid_low) / denom
+            t = max(0.0, min(1.0, t))
+        else:
+            # between 0.3 and 0.5, random drop or add noise
+            denom = (self.occ_mid_high - self.occ_mid_medium)
+            t = (occ - self.occ_mid_medium) / denom
+            t = max(0.0, min(1.0, t))
+            
+            p_drop = t #* self.occ_mid_max_pdrop
+            if self.rng.random() < p_drop:
+                return None
 
         pos_sigma = self.noise_pos_base_m + (self.noise_pos_max_m - self.noise_pos_base_m) * t
-        pos_sigma *= (1.0 + self.noise_dist_gain * dist)
-
+        
         det = det.copy()
         det['x'] += self.rng.normal(0.0, pos_sigma)
         det['y'] += self.rng.normal(0.0, pos_sigma)
-        # no z/yaw noise by design
         return det
 
     def detect(self, frame_data: Dict) -> List[Dict]:
@@ -114,7 +118,7 @@ class GTOccWrapper:
             occ = float(s.get('occ_l1', 0.0))
 
             # High occlusion: drop
-            if occ > self.occ_high_drop:
+            if occ > self.occ_mid_high:
                 continue
 
             det = {
@@ -132,7 +136,7 @@ class GTOccWrapper:
             }
 
             # Medium occlusion: maybe drop or add minor xy noise
-            if self.occ_mid_low <= occ <= self.occ_mid_high:
+            if self.occ_mid_low < occ <= self.occ_mid_high:
                 det2 = self._apply_mid_occ(det, occ, ego)
                 if det2 is None:
                     continue

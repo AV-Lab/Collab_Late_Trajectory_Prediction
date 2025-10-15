@@ -40,27 +40,27 @@ class GTWrapper:
         not_asc_detections = []
         asc_tracks = []
         for det in detections:
-            tr = self._find_track(det)
-            if tr is None:
+            tracklet = self._find_track(det)
+            if tracklet is None:
                 not_asc_detections.append(det)
             else:
-                asc_tracks.append(tr.id)
-                tr.update(det)
-                
-                
-        # create new tracklets
-        for det in not_asc_detections:
-            self._create_track(det)
-            
+                asc_tracks.append(tracklet.id)
+                tracklet.update(det)
+        
         # run update for exsisting tracklets
         asc_tracks = set(asc_tracks)
         for tracklet in self.active_tracklets:
             if tracklet.id not in asc_tracks:
                 tracklet.predict()
                 tracklet.miss_count += 1
+                
+        # create new tracklets
+        for det in not_asc_detections:
+            self._create_track(det)
 
         # keep only tracks with missing count <= keep track ---------------------------------
-        self.active_tracklets = [tr for tr in self.active_tracklets if tr.miss_count <= self.keep_track]
+        self.active_tracklets = [tr for tr in self.active_tracklets if tr.miss_count < self.keep_track]
+            
 
     # ─────────────────────────── getters ────────────────────────────────
     def get_tracked_objects(self):
@@ -145,22 +145,40 @@ class GTWrapper:
             return kf
 
         # ─────────── update with a real detection ─────────────
-        def update(self, det: dict):
+        def update(self, det: dict, alpha: float = 0.2):
+            """
+            KF predict→update with detection, and EMA-smooth box size (dx,dy,dz).
+            alpha in [0,1]; higher = follow detector more closely.
+            """
+            # 1) Kalman step
             self.kf.predict()
-            z = np.array([det["x"], det["y"]]).reshape(2, 1)
+            z = np.array([det["x"], det["y"]], dtype=float).reshape(2, 1)
             self.kf.update(z)
-
-            # geometry: position from detection, size fixed, yaw direct
+        
+            # 2) EMA on size using detection as measurement
+            dx_m, dy_m, dz_m = float(det["dx"]), float(det["dy"]), float(det["dz"])
+            if not hasattr(self, "dx"):
+                # safety: first time just take the measurement
+                self.dx, self.dy, self.dz = dx_m, dy_m, dz_m
+            else:
+                self.dx = (1.0 - alpha) * self.dx + alpha * dx_m
+                self.dy = (1.0 - alpha) * self.dy + alpha * dy_m
+                self.dz = (1.0 - alpha) * self.dz + alpha * dz_m
+        
+            # 3) geometry: pose from det, size from EMA
             self.yaw = det["yaw"]
             self.current_pos = GTWrapper.BBox({
                 "x": det["x"], "y": det["y"], "z": det["z"],
                 "dx": self.dx, "dy": self.dy, "dz": self.dz,
                 "yaw": self.yaw
             })
-
+        
+            # 4) bookkeeping
             self._push_history()
             self.miss_count = 0
             self.update_confidence()
+
+            
 
         # ───────────── predict-only step ───────────────
         def predict(self):
@@ -174,7 +192,6 @@ class GTWrapper:
             })
     
             self._push_history()
-            self.miss_count += 1
             self.update_confidence()
             
 

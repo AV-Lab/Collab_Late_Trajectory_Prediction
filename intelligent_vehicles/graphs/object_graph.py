@@ -51,10 +51,12 @@ class ObjectGraph:
         node = self.Node(category, cur_pos, 1, mean_traj, cov_traj, t)
         self.G.add_node(node_id, node_data=node)
 
-    def add_node_category_II(self, node_id, category, cur_pos, mean_traj, cov_traj, t):
-        node = self.Node(category, cur_pos, 2, mean_traj, cov_traj, t)
-        self.G.add_node(node_id, node_data=node)
-        
+    def add_node_category_II(self, nid, category, loc, pred):
+        # For category 2 node add to the pool
+        node = self.Node(category, loc, 2)
+        node.pool.append(pred)
+        self.G.add_node(nid, node_data=node)
+
     def remove_node(self, node_id):
         self.G.remove_node(node_id)
     
@@ -67,7 +69,7 @@ class ObjectGraph:
         for idx, (tr, mt, ct) in enumerate(zip(tracklets, mean_trajs, cov_trajs)):
             node_id = tr["id"]
             if node_id in cur_nodes:
-                cur_pos = tr["current_pos"][:2]
+                cur_pos = tr["current_pos"]
                 self.update_node(node_id, cur_pos, mt, ct, t)
                 matched.append(node_id)
             else:
@@ -83,17 +85,18 @@ class ObjectGraph:
         # Add new nodes         
         for (idx, node_id) in unmatched:
             category = tracklets[idx]["category"]
-            cur_pos = tracklets[idx]["current_pos"][:2]
+            cur_pos = tracklets[idx]["current_pos"]
             mean_traj = mean_trajs[idx] 
             cov_traj = cov_trajs[idx]
             self.add_node_category_I(node_id, category, cur_pos, mean_traj, cov_traj, t)
             
     def extract_predictions(self):
-        return [{"category": self.G.nodes[nid]['node_data'].category,
+        return [{"id": nid,
+                 "category": self.G.nodes[nid]['node_data'].category,
                  "cur_location": self.G.nodes[nid]['node_data'].cur_location,
                  "prediction": self.G.nodes[nid]['node_data'].future_trajectory} for nid in self.G.nodes]
     
-    def match_shared_predictions(self, objs_locations, max_dist: float = 0.2):
+    def match_shared_predictions(self, objs_locations, max_dist: float = 0.5):
         """
         Match current graph nodes to incoming object locations by minimal Euclidean distance.
 
@@ -156,38 +159,30 @@ class ObjectGraph:
 
         for p in unmatched_predictions:
             # robust extraction
-            category = p.get("category", "unknown")
-            loc = p.get("cur_location", None)
-            pred_blk = p.get("prediction", {}) or {}
+            category = p["category"]
+            loc = p["cur_location"]
+            pred = p["prediction"]
+            
+            if loc is None: continue
 
-            if loc is None:
-                continue
-            # ensure numpy array of shape (2,)
-            xy = np.asarray(loc, dtype=float).reshape(-1)
-            if xy.size < 2:
-                continue
-            x, y = xy[0], xy[1]
+            x, y = loc[0], loc[1]
 
             # distance gate
-            if np.hypot(x - ex, y - ey) > max_dist:
-                continue
-
-            # pull prediction fields
-            t = float(pred_blk.get("tt", 0.0))
-            mean_traj = pred_blk.get("pred", None)
-            cov_traj  = pred_blk.get("cov", None)
+            if np.hypot(x - ex, y - ey) > max_dist: continue
 
             # assign a temporary id and add as Category II
             nid = self._next_tmp_id()
-            self.add_node_category_II(nid, category, np.array([x, y], dtype=float), mean_traj, cov_traj, t)         
+            self.add_node_category_II(nid, category, loc, pred)         
             added_ids.append(nid)
         
         logger.info(f"Total added nodes of category II: {len(added_ids)}")
 
         return added_ids
     
-    def updtae_predictions(self, predictions):
-        pass
+    def updtae_predictions(self, fused_predictions):
+        for k,v in fused_predictions.items():
+            pred = {"timestamp": v["timestamp"], "pred": v["pred"], "cov":v["cov"]}
+            self.G.nodes[k]['node_data'].future_trajectory = pred
    
     def update_pools(self, matches, shared_predictions):
         for i, nid in matches:

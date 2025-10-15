@@ -42,20 +42,21 @@ class BroadcastingIV(BasicIV):
 
     def _build_packet(self, predictions, ego_state):
         # keep this schema stable; add fields as needed
-        return {
-            "sender": str(self.name),
-            "broadcasting_timestamp": float(time.time()),
-            "fps": float(self.fps),
-            "pred_hz": float(self.prediction_frequency),
-            "pred_sampling": float(self.prediction_sampling),
-            "ego_position": {
-                "x": float(ego_state.get("x", 0.0)),
-                "y": float(ego_state.get("y", 0.0)),
-                "z": float(ego_state.get("z", 0.0)),
-                "yaw": float(ego_state.get("yaw", 0.0)),
-            },
-            "predictions": predictions
-        }
+        packet = {"sender": str(self.name),
+                  "broadcasting_timestamp": float(time.time()),
+                  "fps": float(self.fps),
+                  "pred_hz": float(self.prediction_frequency),
+                  "pred_sampling": float(self.prediction_sampling),
+                  "predictions": predictions}
+        
+        if ego_state != None:
+            packet["ego_position"] = {"x": float(ego_state.get("x", 0.0)),
+                                      "y": float(ego_state.get("y", 0.0)),
+                                      "z": float(ego_state.get("z", 0.0)),
+                                      "yaw": float(ego_state.get("yaw", 0.0))}
+            
+        return packet
+            
             
     def run(self, t, scenario=None):
         # Check if it's time for observation
@@ -75,6 +76,14 @@ class BroadcastingIV(BasicIV):
             calibration = frame_data["calibration"]
             point_cloud = frame_data["lidar"]
             trajectories = frame_data["trajectories"]
+            
+            # update location
+            if ego_state != None:
+                self.cur_location = [{"x": ego_state["x"], 
+                                      "y": ego_state["y"], 
+                                      "z": ego_state["z"], 
+                                      "yaw": ego_state["yaw"]}]
+                self.cur_location = self.ego_motion_compensation(self.cur_location, calibration)[0] 
            
             # Run detection
             detections = self.run_detector(t, frame_data, calibration, scenario)

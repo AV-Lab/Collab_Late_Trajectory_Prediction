@@ -18,7 +18,7 @@ from intelligent_vehicles.detectors.initialize import initialize_detector
 from intelligent_vehicles.trackers.initialize import initialize_tracker
 from intelligent_vehicles.predictors.initialize import initialize_predictor
 from intelligent_vehicles.graphs.initialize import initialize_object_graph
-from intelligent_vehicles.late_fusion import GPFuser
+
 
 class BasicIV:
     """ 
@@ -73,21 +73,12 @@ class BasicIV:
                                                        self.prediction_sampling) 
         
         # wall-clock “now” in milliseconds (integer)
-        pred_ts_ms = time.time_ns() 
-        
+        pred_ts_ms = time.time_ns() // 1_000_000       
         self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
+        predictions = self.object_graph.extract_predictions()
         
-        # fuse predictions
-        #logger.info(f"Run fusion, current state of the graph: {self.object_graph}")
-        preds_with_pools = self.object_graph.extract_pools()
-        fused_predictions = GPFuser.fuse(preds_with_pools)
-        
-        # update the graph and reset pools 
-        self.object_graph.updtae_predictions(fused_predictions)
-        self.object_graph.empty_pools()
-        
-        #logger.info(f"Return fused predictions: {self.object_graph}")
-        return fused_predictions
+        return predictions
+
     
     def reset(self):
         self.tracker.reset()
@@ -179,16 +170,17 @@ class BasicIV:
             # if we recived observation 
             ego_state = frame_data["ego_state"]
             calibration = frame_data["calibration"]
-            self.cur_location = [{"x": ego_state["x"], 
-                                  "y": ego_state["y"], 
-                                  "z": ego_state["z"], 
-                                  "yaw": ego_state["yaw"]}]
-            self.cur_location = self.ego_motion_compensation(self.cur_location, calibration)[0] 
-            
-            
             point_cloud = frame_data["lidar"]
             trajectories = frame_data["trajectories"]
-           
+            
+            # update location
+            if ego_state != None:
+                self.cur_location = [{"x": ego_state["x"], 
+                                      "y": ego_state["y"], 
+                                      "z": ego_state["z"], 
+                                      "yaw": ego_state["yaw"]}]
+                self.cur_location = self.ego_motion_compensation(self.cur_location, calibration)[0] 
+
             # Run detection
             detections = self.run_detector(t, frame_data, calibration, scenario)
         
@@ -198,6 +190,7 @@ class BasicIV:
             # Check if it's time for prediction ask tracker for active tracklets and run predict
             response = None
             if abs(t - self.next_prediction_time) <= self.delta: 
+                self.cur_prediction_timestamp = time.time_ns() // 1_000_000
                 predictions = self.run_predictor(tracklets)            
                 response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
                 self.next_prediction_time += 1.0 / self.prediction_frequency  

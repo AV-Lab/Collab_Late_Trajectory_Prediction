@@ -100,14 +100,12 @@ class RNNWrapperNLL:
 
         pred_means, pred_covs = self.predictor.predict(past_trajs, prediction_horizon)
 
-        N_orig = pred_means[0].shape[0]
-        t_orig = np.linspace(0.0, prediction_horizon, N_orig)
+        dt = 1.0 / prediction_sampling 
+        H  = int(prediction_horizon * prediction_sampling)  
+        t_orig = np.arange(1, H + 1, dtype=np.float64) * dt
         
         mean_trajs, cov_trajs = [], []
         for mu, Sigma in zip(pred_means, pred_covs):
-            if mu.shape[0] != N_orig or Sigma.shape[0] != N_orig:
-                raise ValueError(f"Expected {N_orig} steps, got {mu.shape[0]} (mean) and {Sigma.shape[0]} (cov)")
-        
             mean_dict = {float(f"{t:.3f}"): mu[i].tolist()     for i, t in enumerate(t_orig)}
             cov_dict  = {float(f"{t:.3f}"): Sigma[i].tolist()  for i, t in enumerate(t_orig)}  # [pos_dim, pos_dim]
         

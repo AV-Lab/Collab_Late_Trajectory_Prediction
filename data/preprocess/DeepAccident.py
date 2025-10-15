@@ -56,7 +56,7 @@ class Constants:
     YAW_IN_DEGREES = False       # set True if label yaw is in degrees
     
     MIN_POINTS_IN_BOX = 10         # threshold for point support
-    KEEP_RADIUS_M = 100.0
+    KEEP_RADIUS_M = 50.0
 
 
 def _load_lidar_xyz(npz_path: str) -> Optional[np.ndarray]:

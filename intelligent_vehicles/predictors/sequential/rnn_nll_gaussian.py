@@ -134,20 +134,34 @@ class RNNPredictorNLL:
         if ckpt_path:
             self.model.load_state_dict(ckpt["model_state_dict"])
             self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-
-    # --------------------------- losses ----------------------------------- #
-    def gaussian_nll_loss(self, y_true, mu, logvar):
-        """
-        Diagonal Gaussian NLL with per-dim heteroscedastic variance.
-        y_true, mu, logvar: [B, H, D]
-        """
-        # clamp logvar for numerical stability
-        logvar = torch.clamp(logvar, self.logvar_min, self.logvar_max)
-        var = torch.exp(logvar).clamp_min(self.var_floor)
-        # NLL per-element, then mean over all dims
-        nll = 0.5 * (logvar + (y_true - mu) ** 2 / var)
-        return nll.mean()
     
+    @staticmethod
+    def gaussian_nll_loss(
+        y_true, mu, raw_var_head,
+        var_floor=1e-2,              # keep ≥ your successful floor
+        var_ceiling=None,            # optionally cap very large vars (e.g., 1e2)
+        add_const=True              # add 0.5*log(2π) if you want the full NLL
+    ):
+        """
+    #   Gaussian NLL with variance parameterized via softplus:
+    #      var = softplus(raw) + var_floor  (strictly positive)
+    #    Inputs:
+    #      y_true, mu, raw_var_head: [B, H, D]
+    #    Returns:
+    #      scalar loss (mean over all dims)
+    #    """
+        # strictly positive variance, numerically stable around large inputs
+        var = F.softplus(raw_var_head, beta=1.0, threshold=20.0) + var_floor
+        if var_ceiling is not None:
+            var = torch.clamp(var, max=var_ceiling)
+    
+        logvar = torch.log(var)
+        nll = 0.5 * (logvar + (y_true - mu) ** 2 / var)
+    
+        if add_const:
+            nll = nll + 0.5 * math.log(2.0 * math.pi)
+    
+        return nll.mean()
 
     @staticmethod
     def _vel_to_pos(last_pos, vel_seq, pos_size):
@@ -312,10 +326,11 @@ class RNNPredictorNLL:
         return ade, fde
 
     def predict(self, trajs, prediction_horizon):
-        """trajs: list of np.ndarray with shape [T_obs, input_size]
+        """
+        trajs: list[np.ndarray] each with shape [T_obs, input_size]
         Returns:
-            predictions:  list[np.ndarray]          each [H, pos_dim] (position mean)
-            covariances:  list[np.ndarray]          each [H, pos_dim, pos_dim] (diag cov)
+            predictions:  list[np.ndarray]  each [H, pos_dim]  (mean positions)
+            covariances:  list[np.ndarray]  each [H, pos_dim, pos_dim] (diag cov)
         """
         if not self.model_trained:
             raise RuntimeError("Model not trained / loaded.")
@@ -324,12 +339,13 @@ class RNNPredictorNLL:
         vel_batch, last_pos_batch = [], []
         H = int(prediction_horizon * self.trained_fps)   # seconds → steps
     
-        # build velocity histories
+        # Build velocity histories and last positions
         for tr in trajs:
-            t = torch.tensor(tr, dtype=torch.float32, device=self.device)      # [T_obs, input_size]
-            last_pos_batch.append(t[-1, self.pos_slice])                       # last [x,y]
-            vel = t[1:] - t[:-1]                                               # [T_obs-1, input_size]
+            t = torch.tensor(tr, dtype=torch.float32, device=self.device)     # [T_obs, input_size]
+            last_pos_batch.append(t[-1, self.pos_slice])                      # last [x,y]
     
+            vel = t[1:] - t[:-1]                                              # [T_obs-1, input_size]
+            # pad/crop to observation_length - 1
             if vel.size(0) > self.observation_length - 1:
                 vel = vel[-(self.observation_length - 1):]
             else:
@@ -337,37 +353,42 @@ class RNNPredictorNLL:
                 if pad_len > 0:
                     zpad = torch.zeros(pad_len, vel.size(1), device=self.device)
                     vel = torch.cat([zpad, vel], dim=0)
+    
             vel_batch.append(vel)
     
-        vel_batch = torch.stack(vel_batch)                                     # [B, T-1, input_size]
-        enc_in = vel_batch[:, :, :self.input_size]                             # velocities only
+        vel_batch = torch.stack(vel_batch)                                    # [B, T-1, input_size]
+        enc_in = vel_batch[:, :, :self.input_size]                            # velocities only
     
         predictions, covariances = [], []
         with torch.no_grad():
-            # model outputs mean velocities and log-variance
-            mu_v, lv_v = self.model(enc_in, H)                                 # [B, H, out_dim] each
+            # model outputs: mean velocities and *raw variance head* (not logvar!)
+            mu_v, raw_v = self.model(enc_in, H)                               # [B, H, out_dim] each
     
-            # map log-variance -> variance as in training: exp(clamp) + floor
-            lv_v = torch.clamp(lv_v, self.logvar_min, self.logvar_max)
-            var_v = torch.exp(lv_v).clamp_min(self.var_floor)                        # [B, H, out_dim]
+            # --- VARIANCE TRANSFORM (match training!) -----------------------
+            # var = softplus(raw) + floor  (strictly positive, stable)
+            var_v = F.softplus(raw_v, beta=1.0, threshold=20.0) + self.var_floor
+            # Optional ceiling if you decide to add one later:
+            # if hasattr(self, "var_ceiling") and self.var_ceiling is not None:
+            #     var_v = torch.clamp(var_v, max=self.var_ceiling)
     
-            # integrate to positions (mean) and propagate diagonal variance
+            # integrate velocities to positions (mean) and propagate diagonal variance
             for i in range(len(trajs)):
-                last_pos = last_pos_batch[i]                                    # [pos_dim]
-                mu_v_i  = mu_v[i:i+1, :, :self.pos_size]                        # [1, H, pos_dim]
-                var_v_i = var_v[i:i+1, :, :self.pos_size]                       # [1, H, pos_dim]
+                last_pos = last_pos_batch[i]                                   # [pos_dim]
+                mu_v_i  = mu_v[i:i+1, :, :self.pos_size]                       # [1, H, pos_dim]
+                var_v_i = var_v[i:i+1, :, :self.pos_size]                      # [1, H, pos_dim]
     
                 # mean positions via cumulative sum of velocities
-                pos_mean = self._vel_to_pos(last_pos, mu_v_i, self.pos_size)[0] # [H, pos_dim]
+                pos_mean = self._vel_to_pos(last_pos, mu_v_i, self.pos_size)[0]  # [H, pos_dim]
     
-                # diagonal covariance: Var(sum v) = sum Var(v) (indep increments)
-                pos_var  = torch.cumsum(var_v_i, dim=1)[0]                      # [H, pos_dim]
-                pos_cov  = torch.diag_embed(pos_var)                            # [H, pos_dim, pos_dim]
+                # diagonal covariance: Var(sum v) = sum Var(v)  (indep increments assumption)
+                pos_var  = torch.cumsum(var_v_i, dim=1)[0]                       # [H, pos_dim]
+                pos_cov  = torch.diag_embed(pos_var)                             # [H, pos_dim, pos_dim]
     
                 predictions.append(pos_mean.cpu().numpy())
                 covariances.append(pos_cov.cpu().numpy())
     
         return predictions, covariances
+
 
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~  checkpoint  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #

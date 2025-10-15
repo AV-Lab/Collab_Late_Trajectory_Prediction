@@ -156,9 +156,10 @@ class BBoxVisualizer:
             (0, 1, 0),
         )
 
-    def update_bboxes(self, detections: List[Dict]):
+    def update_bboxes(self, detections: List[Dict], colour=None):
         for d in detections:
-            colour = _color_from_occ(d.get("occ_score"))
+            if colour is None:
+                colour = _color_from_occ(d.get("occ_score"))
             #lbl = d.get("label", "obj")
             #if lbl not in self.label_colors:
             #    self.label_colors[lbl] = tuple(np.random.rand(3))
