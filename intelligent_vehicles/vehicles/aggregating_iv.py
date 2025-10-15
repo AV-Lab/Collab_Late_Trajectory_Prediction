@@ -53,7 +53,8 @@ class AggregatingIV(BasicIV):
                                                        self.prediction_sampling) 
         
         # wall-clock “now” in milliseconds (integer)
-        pred_ts_ms = time.time_ns() // 1_000_000       
+        pred_ts_ms = time.time_ns() // 1_000_000   
+        self.last_prediction_timestamp = pred_ts_ms
         self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
         #logger.info(f"Run fusion, current state of the graph: {self.object_graph}")
         preds_with_pools = self.object_graph.extract_pools()
@@ -85,8 +86,12 @@ class AggregatingIV(BasicIV):
             #logger.info(f"Current state of the graph: {self.object_graph}")
             
             #print("Shared predictions", shared_predictions)
+            print("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR")
+            print(shared_predictions)
+            
             shared_predictions = Filter.filter_to_ego_prediction_step(shared_predictions, 
-                                                                      self.cur_prediction_timestamp,
+                                                                      self.last_prediction_timestamp,
+                                                                      self.prediction_frequency,
                                                                       self.prediction_sampling) 
             #print("Filtered shared predictions", shared_predictions)
             

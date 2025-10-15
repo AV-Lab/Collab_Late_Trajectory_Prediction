@@ -156,12 +156,11 @@ class Broadcaster:
         
         cat = str(entry["category"])
         base_xy = np.asarray(entry["cur_location"], dtype=np.float32)
-
+        tt = entry["timestamp"] 
         pred_obj = entry["prediction"]
         series = self._extract_ordered_series(pred_obj["pred"], pred_obj["cov"])
 
         # quantize
-        tt = pred_obj["timestamp"] 
         t_ms = self._quantize_times(series["t"])
         P = self._quantize_offsets_xy(base_xy, series["xy"], cm_per_unit=100.0)   # centimeters
         V = self._quantize_diag_cov(series["vv"], scale=100.0)                    # centi m^2

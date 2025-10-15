@@ -68,12 +68,12 @@ class BasicIV:
     
     def run_predictor(self, tracklets):
         past_trajs = self.predictor.format_input(tracklets)
+        
         mean_trajs, cov_trajs = self.predictor.predict(past_trajs, 
                                                        self.prediction_horizon, 
                                                        self.prediction_sampling) 
-        
         # wall-clock “now” in milliseconds (integer)
-        pred_ts_ms = time.time_ns() // 1_000_000       
+        pred_ts_ms = time.time_ns() // 1_000_000
         self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
         predictions = self.object_graph.extract_predictions()
         
@@ -190,7 +190,6 @@ class BasicIV:
             # Check if it's time for prediction ask tracker for active tracklets and run predict
             response = None
             if abs(t - self.next_prediction_time) <= self.delta: 
-                self.cur_prediction_timestamp = time.time_ns() // 1_000_000
                 predictions = self.run_predictor(tracklets)            
                 response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
                 self.next_prediction_time += 1.0 / self.prediction_frequency  

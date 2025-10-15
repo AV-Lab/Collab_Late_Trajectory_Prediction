@@ -190,7 +190,7 @@ def compute_frame_based_performance(
             pred_dict = p["prediction"]
             means_dict  = pred_dict["pred"]
             cov_dict    = pred_dict["cov"]
-            timestamp   = pred_dict["timestamp"]
+            timestamp   = p["timestamp"]
             pred_box    = p["cur_location"]
             pred_vec = to_vec(means_dict, input_dimension, hz)
             past_vec = to_vec(past_id_trck[id_], input_dimension, pl, reverse=True)

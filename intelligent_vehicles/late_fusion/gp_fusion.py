@@ -173,7 +173,7 @@ class GPFuser:
     
         
 
-    def fuse(self, preds_with_pools, visualize=False):
+    def fuse(self, preds_with_pools, visualize=True):
         """
         Returns fused predictions in the same ego format per object_id:
           {obj_id: {'timestamp': ego_ts_ms, 'pred': {t:[x,y]}, 'cov': {t:[[2x2]]}}}
@@ -188,6 +188,9 @@ class GPFuser:
             # Step 1: Parse ego and pool into arrays
             t_ego, xy_ego, var_ego = self._ego_to_arrays(ego_pred)
             t_pool, xy_pool, var_pool = self._pool_to_arrays(pool)
+            
+            print(t_ego)
+            print(t_pool)
     
             if visualize:
                 self.plot_ego_vs_pool(xy_ego, var_ego, xy_pool, var_pool, title=f"Before Gating (Obj {obj_id})")

@@ -45,6 +45,7 @@ class Listener:
           { "c": str, "b": [bx,by], "T": [t_ms...], "P": [[dx_cm,dy_cm]...],
             "V": [[varx_centi,vary_centi]...], "tt": <pred_ts_ms> }
         """
+        
         bx, by = entry["b"]
         t_s = [tm / 1000.0 for tm in entry["T"]]
         xy = [[bx + dx / 100.0, by + dy / 100.0] for dx, dy in entry["P"]]
@@ -55,8 +56,8 @@ class Listener:
             "id":entry["id"],
             "category": str(entry["c"]),
             "cur_location": [float(bx), float(by)],
+            "pred_ts_ms": pred_ts_ms,
             "prediction": {
-                "pred_ts_ms": pred_ts_ms,  
                 "t": t_s,
                 "xy": xy,
                 "cov": cov

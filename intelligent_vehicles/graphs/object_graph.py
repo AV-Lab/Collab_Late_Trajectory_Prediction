@@ -21,13 +21,14 @@ class ObjectGraph:
                      category,
                      cur_location,
                      type_,
+                     timestamp,
                      mean_traj = None,
-                     cov_traj = None, 
-                     timestamp = None):
+                     cov_traj = None):
             
             self.category = category
             self.cur_location = cur_location
-            self.future_trajectory = {"timestamp": timestamp, "pred": mean_traj, "cov": cov_traj}
+            self.last_updated = timestamp
+            self.future_trajectory = {"pred": mean_traj, "cov": cov_traj}
             self.type = int(type_) # 1 or 2 
             self.pool = []
             
@@ -41,14 +42,15 @@ class ObjectGraph:
         self._tmp_seq += 1
         return f"tmp_{self._tmp_seq:06d}"
 
-    def update_node(self, node_id, cur_pos, mean_traj, cov_traj, t):
+    def update_node(self, node_id, cur_pos, t, mean_traj, cov_traj):
         node = self.G.nodes[node_id]['node_data']
         node.cur_location = cur_pos
-        node.future_trajectory = {"timestamp": t, "pred": mean_traj, "cov": cov_traj}
+        node.last_updated = t
+        node.future_trajectory = {"pred": mean_traj, "cov": cov_traj}
         self.G.nodes[node_id].update(node_data=node)
         
-    def add_node_category_I(self, node_id, category, cur_pos, mean_traj, cov_traj, t):
-        node = self.Node(category, cur_pos, 1, mean_traj, cov_traj, t)
+    def add_node_category_I(self, node_id, category, cur_pos, t, mean_traj, cov_traj):
+        node = self.Node(category, cur_pos, 1, t, mean_traj, cov_traj)
         self.G.add_node(node_id, node_data=node)
 
     def add_node_category_II(self, nid, category, loc, pred):
@@ -70,7 +72,7 @@ class ObjectGraph:
             node_id = tr["id"]
             if node_id in cur_nodes:
                 cur_pos = tr["current_pos"]
-                self.update_node(node_id, cur_pos, mt, ct, t)
+                self.update_node(node_id, cur_pos, t, mt, ct)
                 matched.append(node_id)
             else:
                 unmatched.append((idx, node_id))
@@ -88,12 +90,13 @@ class ObjectGraph:
             cur_pos = tracklets[idx]["current_pos"]
             mean_traj = mean_trajs[idx] 
             cov_traj = cov_trajs[idx]
-            self.add_node_category_I(node_id, category, cur_pos, mean_traj, cov_traj, t)
+            self.add_node_category_I(node_id, category, cur_pos,  t, mean_traj, cov_traj)
             
     def extract_predictions(self):
         return [{"id": nid,
                  "category": self.G.nodes[nid]['node_data'].category,
                  "cur_location": self.G.nodes[nid]['node_data'].cur_location,
+                 "timestamp": self.G.nodes[nid]['node_data'].last_updated,
                  "prediction": self.G.nodes[nid]['node_data'].future_trajectory} for nid in self.G.nodes]
     
     def match_shared_predictions(self, objs_locations, max_dist: float = 0.5):
@@ -181,7 +184,7 @@ class ObjectGraph:
     
     def updtae_predictions(self, fused_predictions):
         for k,v in fused_predictions.items():
-            pred = {"timestamp": v["timestamp"], "pred": v["pred"], "cov":v["cov"]}
+            pred = {"pred": v["pred"], "cov":v["cov"]}
             self.G.nodes[k]['node_data'].future_trajectory = pred
    
     def update_pools(self, matches, shared_predictions):
