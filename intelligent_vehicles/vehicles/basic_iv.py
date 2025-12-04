@@ -66,17 +66,15 @@ class BasicIV:
         tracklets = self.tracker.get_tracked_objects()
         return tracklets
     
-    def run_predictor(self, tracklets):
+
+    def run_predictor(self, tracklets, sim_time_s, trajectories):
         past_trajs = self.predictor.format_input(tracklets)
-        
-        mean_trajs, cov_trajs = self.predictor.predict(past_trajs, 
-                                                       self.prediction_horizon, 
-                                                       self.prediction_sampling) 
-        # wall-clock “now” in milliseconds (integer)
-        pred_ts_ms = time.time_ns() // 1_000_000
+        pred_ts_ms = int(round(sim_time_s * 1000.0))  # use coordinated simulation time
+        mean_trajs, cov_trajs = self.predictor.predict(past_trajs)
         self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
-        predictions = self.object_graph.extract_predictions()
-        
+        predictions = self.object_graph.extract_predictions()        
+        print(f"[{self.name}] prediction sim-timestamp (ms): {pred_ts_ms}")
+
         return predictions
 
     
@@ -115,66 +113,70 @@ class BasicIV:
                  predictor_config, 
                  parameters, 
                  sensors, 
-                 data):
+                 data,
+                 clock_step):
     
         self.name = name
         self.cur_location = None
         self.cur_velocity = None
         self.cur_yaw = None
         self.load_gt_detections = False
-        self.delta = 0.01 # should be dt/2 from global clock
-        self.starting_time = 0.0 # can include delays if needed
+
+        # timing/init
+        self.starting_time = 0.0  # can include delays if needed
         self.next_observation_time = self.starting_time  
-        self.next_prediction_time = self.starting_time + 1.0 # delay by 1 second to make sure we have track history
-        self.fps = parameters["fps"]
+        self.next_prediction_time = self.starting_time + 1.0  # delay by 1 second to make sure we have track history
+
+        # params
         self.tracking_history = parameters["tracking_history"]
         self.keep_track = parameters["keep_track"]
-        self.prediction_horizon = parameters["prediction_horizon"]
         self.prediction_frequency = parameters["prediction_frequency"]
-        self.prediction_sampling = parameters["prediction_sampling"]
+        self.prediction_horizon = parameters["prediction_horizon"]
         self.device = parameters["device"]
         
-        if "train" in data:
-            self.train_loader = self._init_dataloader(data["train"], sensors, self.fps)
-        if "valid" in data:
-            self.valid_loader = self._init_dataloader(data["valid"], sensors, self.fps)
-            
-        test = data["test"] if "test" in data else data["valid"]
-        self.test_loader = self._init_dataloader(test, sensors, self.fps)
-        
         detector_config["device"] = self.device
-        self._init_detector(detector_config)
-        
+        predictor_config["device"] = self.device
         tracker_config["tracking_history"] = self.tracking_history
         tracker_config["keep_track"] = self.keep_track
-        self._init_tracker(tracker_config)
+        predictor_config["prediction_horizon"] = self.prediction_horizon
         
-        predictor_config["device"] = self.device
+        # intialize predictor         
         self._init_predictor(predictor_config)
-        
+        self.fps = self.predictor.fps
+        self.prediction_sampling = self.predictor.fps
+        self.obs_period  = 1.0 / self.fps
+        self.pred_period = 1.0 / self.prediction_frequency
+        self.delta       = clock_step
+
+        # intialize detector, tracker, object graph         
+        self._init_detector(detector_config)
+        self._init_tracker(tracker_config)
         self._init_object_graph()
+        
+        self.loader = self._init_dataloader(data, sensors, self.fps)
     
     
     def run(self, t, scenario=None):
-        # Check if it's time for observation
-        if abs(t - self.next_observation_time) <= self.delta:
-            frame_data = self.test_loader.get_frame_data(t)
-            self.next_observation_time += 1.0 / self.fps
+        response = None
+        
+        if (t + self.delta) >= self.next_observation_time:
+            frame_data = self.loader.get_frame_data(t)
+            self.next_observation_time += self.obs_period
             
-            if frame_data == None:
+            if frame_data is None:
                 logger.info(f"Vehicle {self.name} left the scene.")
                 self.next_observation_time = self.starting_time
                 self.next_prediction_time = self.starting_time + 1.0
                 return None
             
-            # if we recived observation 
+            # if we received observation 
             ego_state = frame_data["ego_state"]
             calibration = frame_data["calibration"]
             point_cloud = frame_data["lidar"]
             trajectories = frame_data["trajectories"]
             
             # update location
-            if ego_state != None:
+            if ego_state is not None:
                 self.cur_location = [{"x": ego_state["x"], 
                                       "y": ego_state["y"], 
                                       "z": ego_state["z"], 
@@ -187,11 +189,11 @@ class BasicIV:
             # Update the tracker 
             tracklets = self.run_tracker(detections)
 
-            # Check if it's time for prediction ask tracker for active tracklets and run predict
-            response = None
-            if abs(t - self.next_prediction_time) <= self.delta: 
-                predictions = self.run_predictor(tracklets)            
-                response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
-                self.next_prediction_time += 1.0 / self.prediction_frequency  
+            # Due-or-late gate for prediction
             
-            return response
+            if (t + self.delta) >= self.next_prediction_time:
+                predictions = self.run_predictor(tracklets, t, trajectories) 
+                response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
+                self.next_prediction_time += self.pred_period  
+            
+        return response

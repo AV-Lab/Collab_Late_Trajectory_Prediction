@@ -46,7 +46,8 @@ class Listener:
             "V": [[varx_centi,vary_centi]...], "tt": <pred_ts_ms> }
         """
         
-        bx, by = entry["b"]
+        loc = [q / 100.0 for q in entry["b"]]
+        bx, by = loc[0], loc[1]
         t_s = [tm / 1000.0 for tm in entry["T"]]
         xy = [[bx + dx / 100.0, by + dy / 100.0] for dx, dy in entry["P"]]
         cov = [[[vx / 100.0, 0.0], [0.0, vy / 100.0]] for vx, vy in entry["V"]]
@@ -55,7 +56,7 @@ class Listener:
         return {
             "id":entry["id"],
             "category": str(entry["c"]),
-            "cur_location": [float(bx), float(by)],
+            "cur_location": loc,
             "pred_ts_ms": pred_ts_ms,
             "prediction": {
                 "t": t_s,
@@ -90,6 +91,7 @@ class Listener:
             },
             "predictions": [Listener._expand_entry(e) for e in (pkt.get("pred") or [])],
         }
+            
         return expanded
 
     # -------------------- async receive loop --------------------

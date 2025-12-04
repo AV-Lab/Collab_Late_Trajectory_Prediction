@@ -61,9 +61,6 @@ class Broadcaster:
 
         logger.info("[Broadcaster] connected to %s.in topic='%s'", root, topic)
 
-    # -----------------------------------------
-    # helpers: numpy → python
-    # -----------------------------------------
     @staticmethod
     def _np(obj: Any) -> Any:
         """Make any numpy types msgpackable."""
@@ -73,9 +70,6 @@ class Broadcaster:
             return obj.item()
         return obj
 
-    # -----------------------------------------
-    # helpers: compact & quantize trajectories
-    # -----------------------------------------
     @staticmethod
     def _quantize_times(seconds: List[float]) -> List[int]:
         """
@@ -103,6 +97,20 @@ class Broadcaster:
             dy_cm = max(min(dy_cm, 32767), -32768)
             out.append([dx_cm, dy_cm])
         return out
+    
+    @staticmethod
+    def _quantize_location_full(cur_location, scale: float = 100.0) -> list:
+        """
+        Quantize the WHOLE location vector (x, y, z, yaw, vx, vy, ...) → int16.
+        We just apply the same scale to every component.
+        """
+        arr = np.asarray(cur_location, dtype=float).reshape(-1)
+        out = []
+        for v in arr:
+            qv = int(round(v * scale))
+            qv = max(min(qv, 32767), -32768)
+            out.append(qv)
+        return out
 
     @staticmethod
     def _quantize_diag_cov(diag_list: List[List[float]],
@@ -127,7 +135,6 @@ class Broadcaster:
         """
         ts = sorted(pred_map.keys())
         xy = [pred_map[t] for t in ts]
-        # keep only (var_x, var_y) from the diagonal
         vv = [[cov_map[t][0][0], cov_map[t][1][1]] for t in ts]
         return {"t": ts, "xy": xy, "vv": vv}
 
@@ -155,12 +162,13 @@ class Broadcaster:
         """
         
         cat = str(entry["category"])
-        base_xy = np.asarray(entry["cur_location"], dtype=np.float32)
         tt = entry["timestamp"] 
         pred_obj = entry["prediction"]
+        loc = self._quantize_location_full(entry["cur_location"], scale=100.0)
         series = self._extract_ordered_series(pred_obj["pred"], pred_obj["cov"])
 
         # quantize
+        base_xy = np.asarray(entry["cur_location"], dtype=np.float32)
         t_ms = self._quantize_times(series["t"])
         P = self._quantize_offsets_xy(base_xy, series["xy"], cm_per_unit=100.0)   # centimeters
         V = self._quantize_diag_cov(series["vv"], scale=100.0)                    # centi m^2
@@ -168,7 +176,7 @@ class Broadcaster:
         return {
             "id": str(entry["id"]),
             "c": cat,
-            "b": [float(base_xy[0]), float(base_xy[1])],
+            "b": loc,
             "tt": tt,
             "T": t_ms,
             "P": P,
@@ -186,9 +194,8 @@ class Broadcaster:
 
         compact_preds = [self._compact_prediction_entry(self._np(p)) for p in preds]
 
-        return {
+        package = {
             "s": str(payload.get("sender", "")),
-            # monotonic-ish ms timestamp without float rounding
             "ts": (time.time_ns() // 1_000_000),
             "fps": float(payload.get("fps", 0.0)),
             "phz": float(payload.get("pred_hz", 0.0)),
@@ -201,10 +208,9 @@ class Broadcaster:
             ],
             "pred": compact_preds,
         }
-
-    # -----------------------------------------
-    # public API
-    # -----------------------------------------
+        
+        return package
+        
     def send(self, payload_dict: Dict[str, Any]) -> int:
         """
         Compact → msgpack → (optional zstd) → multipart send.
@@ -213,13 +219,9 @@ class Broadcaster:
         compact = self._build_compact_packet(payload_dict)
         raw = msgpack.packb(compact, use_bin_type=True)
 
-        if len(raw) >= self._compress_min:
-            data = self._zc.compress(raw)
-            flag = b"z"  # compressed
-        else:
-            data = raw
-            flag = b"n"  # not compressed
-
+        data = self._zc.compress(raw)
+        flag = b"z"  # compressed
+        
         size_bytes = len(self.topic) + 1 + len(data)  
         self.sock.send_multipart([self.topic, flag, data])
         return size_bytes

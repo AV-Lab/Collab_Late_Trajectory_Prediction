@@ -193,7 +193,7 @@ def compute_frame_based_performance(
             timestamp   = p["timestamp"]
             pred_box    = p["cur_location"]
             pred_vec = to_vec(means_dict, input_dimension, hz)
-            past_vec = to_vec(past_id_trck[id_], input_dimension, pl, reverse=True)
+            past_vec = to_vec(past_id_trck[id_], input_dimension, pl, reverse=True) if id_ in past_id_trck else None
             
             matched_raw.append({
                 "gid": gid,
@@ -224,7 +224,7 @@ def compute_frame_based_performance(
             continue
         id_ = p["id"]
         pred_dict = p["prediction"]
-        fp_past_vec = to_vec(past_id_trck[id_], input_dimension, past_len, reverse=True)
+        fp_past_vec = to_vec(past_id_trck[id_], input_dimension, past_len, reverse=True) if id_ in past_id_trck else None
 
         false_pos_raw.append({
             "id": id_,

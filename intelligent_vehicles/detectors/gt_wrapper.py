@@ -67,7 +67,7 @@ class GTOccWrapper:
         logger.info("Detections come from ground truth (occlusion-aware; xy noise only).")
         self.occ_mid_low = 0.15
         self.occ_mid_medium = 0.3
-        self.occ_mid_high = 0.5
+        self.occ_mid_high = 0.75
         self.occ_mid_max_pdrop = 0.5
 
         self.noise_pos_base_m = 0.02
@@ -114,6 +114,7 @@ class GTOccWrapper:
         ego = frame_data.get("ego_state", None)
 
         out: List[Dict] = []
+
         for s in labels:
             occ = float(s.get('occ_l1', 0.0))
 
@@ -136,11 +137,11 @@ class GTOccWrapper:
             }
 
             # Medium occlusion: maybe drop or add minor xy noise
-            if self.occ_mid_low < occ <= self.occ_mid_high:
-                det2 = self._apply_mid_occ(det, occ, ego)
-                if det2 is None:
-                    continue
-                det = det2
+            #if self.occ_mid_low < occ <= self.occ_mid_high:
+            #    det2 = self._apply_mid_occ(det, occ, ego)
+            #    if det2 is None:
+            #        continue
+            #    det = det2
 
             # Low occlusion: keep as-is
             out.append(det)

@@ -15,17 +15,16 @@ class Filter:
             xy  = pr["xy"]
             cov = pr["cov"]
 
-
-            # For predictions 
-            ego_next_pr_ts_ms = ego_ts_ms + int(round(1000.0 * (1/pr_frequency))) # when next prediction will run 
-            ego_gate_tms = ego_next_pr_ts_ms + int(round(1000.0 * (1/pr_sampling))) 
+            
+            ego_pred_ts_ms = ego_ts_ms + int(round(1000.0 * (1/pr_frequency)))
+            ego_gate_tms = ego_pred_ts_ms + int(round(1000.0 * (1/pr_sampling)))             
             abs_t = [ts0 + int(round(1000.0 * s)) for s in t]
             filtered = [(tms, pt, cv) for tms, pt, cv in zip(abs_t, xy, cov) if tms >= ego_gate_tms]
             
             if len(filtered) < min_points: continue
-
+        
             # rebase future to start at its first kept timestamp
-            new_t   = [round((tms-ego_next_pr_ts_ms) / 1000.0, 3) for tms, _, _ in filtered]
+            new_t   = [round((tms-ego_pred_ts_ms) / 1000.0, 3) for tms, _, _ in filtered]
             new_xy  = [pt for _, pt, _ in filtered]
             new_cov = [cv for _, _, cv in filtered]
             
@@ -37,9 +36,10 @@ class Filter:
                 cur_location = xy[best_idx]
 
             out.append({
+                "id":p["id"],
                 "category": p["category"],
                 "cur_location": cur_location,           
-                "pred_ts_ms": ego_next_pr_ts_ms,
+                "pred_ts_ms": ego_pred_ts_ms,
                 "prediction": {
                     "t": new_t,
                     "xy": new_xy,

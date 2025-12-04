@@ -56,7 +56,7 @@ class TrajDataloader:
         # Extract scenario data: expected format is { scenario_name: { timestamp: frame_data, ... } }
         scenario_data = dataset.get(scenario_name, {})
         if not scenario_data:
-            raise ValueError(f"Scenario '{scenario_name}' not found in dataset.")
+            return False
     
         original_timestamps = sorted(scenario_data.keys())
     
@@ -97,6 +97,7 @@ class TrajDataloader:
     
         self.timestamps = sorted(self.loaded_frames.keys())
         self.trajectories = self._compute_trajectories()
+        return True
 
     def ego_motion_compensation(self, detections, calibration) -> List[Dict[str, float]]:
         """

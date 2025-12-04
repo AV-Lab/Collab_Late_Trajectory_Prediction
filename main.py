@@ -8,10 +8,7 @@ Created on Sat Mar 16 23:18:44 2024
 
 
 from logging_setup import setup_logging
-from parser import (load_config, 
-                    parse_deepaccident_config,
-                    parse_opv2v_config,
-                    parse_v2v4real_config)
+from parser import (load_config, parse_config)
 from intelligent_vehicles.initialize import initialize_vehicles
 
 from visualization.bbox_visualize import BBoxVisualizer
@@ -19,7 +16,10 @@ from visualization.trajectory_visualize import PredictorVisualizer
 from evaluation.frame_based_metrics import compute_frame_based_performance  
 from evaluation.prediction_evaluation import Evaluator              
 import numpy as np
+import time
 import threading, zmq
+import warnings
+warnings.filterwarnings("ignore")
 _PROXY_THREAD = None
 logger = setup_logging("collaboration.log")
 
@@ -39,31 +39,7 @@ def ensure_proxy_started(channel_root: str):
 def parse_configuration(config_path):
     try:
         config = load_config(config_path)
-        
-        if "dataset" not in config:
-            msg = "Config must have a 'dataset' block."
-            logger.error(msg)
-            raise ValueError(msg)
-        
-        dataset_block = config["dataset"]
-        required_dataset_keys = {"name", "path", "prefixes"}
-    
-        if not required_dataset_keys.issubset(dataset_block.keys()):
-            msg = "'dataset' block must contain 'name', 'path', and 'prefixes' fields."
-            logger.error(msg)
-            raise ValueError(msg)
-            
-        if dataset_block["name"].lower() == "deepaccident":
-            parsed = parse_deepaccident_config(config, logger)
-        elif dataset_block["name"].lower() == "opv2v":
-            parsed = parse_opv2v_config(config, logger)
-        elif dataset_block["name"].lower() == "v2v4real":
-            parsed = parse_v2v4real_config(config, logger)
-        else:
-            msg = "'dataset name' should one of [deepaccident, opv2v, v2v4real]."
-            logger.error(msg)
-            raise ValueError(msg)
-            
+        parsed = parse_config(config, logger)
         return parsed
         
     except (FileNotFoundError, ValueError) as e:
@@ -81,42 +57,43 @@ if __name__ == '__main__':
     configuration = parse_configuration(config_path)
     logger.info("Config parsed successfully")
     
-    ego_vehicle, vehicles = initialize_vehicles(configuration['data'],
-                                                configuration["ego_vehicle"],
-                                                configuration["vehicles"],
-                                                channel_root)  
-    scenarios = ego_vehicle.test_loader.extract_all_scenarios()
-    print("scenarios ready")
-       
-    # global clock 
     simulation_time = 10.0  # total sim time in seconds
     dt = 0.02               # step in seconds
+    clock_step =  dt / 2
     
+    scenarios, ego_vehicle, vehicles = initialize_vehicles(configuration, clock_step, channel_root)  
+        
     # parameters 
-    input_size = ego_vehicle.predictor.predictor.input_size
-    pred_len = ego_vehicle.predictor.predictor.prediction_horizon
-    past_len = ego_vehicle.predictor.predictor.observation_length
+    input_size = ego_vehicle.predictor.input_size
+    pred_len = ego_vehicle.predictor.prediction_horizon
+    past_len = ego_vehicle.predictor.observation_length
     
-    evaluator = Evaluator(logger=logger)  # NEW
+    evaluator = Evaluator(logger=logger)
     #viz = PredictorVisualizer()
      
-    for scenario in scenarios:
+    for scenario, number_of_vehicles in scenarios.items():
         # first preload all data for scenario
         ego_vehicle.reset()
-        ego_vehicle.test_loader.preload_data(scenario)
+        res = ego_vehicle.loader.preload_data(scenario)
+        if not res:
+            raise ValueError(f"Scenario '{scenario}' not found in dataset, for ego-vehicle it must be present.")
+            
         logger.info(f"For {ego_vehicle.name} scnerio {scenario} is loaded")
-        for iv in vehicles:
+        N = min(len(vehicles), number_of_vehicles)
+        for iv in vehicles[:N]:
             iv.reset()
-            iv.test_loader.preload_data(scenario) 
+            iv.loader.preload_data(scenario) 
             logger.info(f"For {iv.name} scnerio {scenario} is loaded")
         
         t_global = 0.0
         evaluator.begin_scenario()  # NEW
         
-        # run global_clock
+        # run global_clock (sequential, ego advances time)
         while t_global < simulation_time:
-            for iv in vehicles:
+            # step all other vehicles at current sim-time
+            for iv in vehicles[:N]:
                 iv.run(t_global)
+            # step ego at current sim-time
             response = ego_vehicle.run(t_global, scenario)
             if response is not None:
                 predictions, tracklets, trajectories, point_cloud, ego_pose, calibration = response
@@ -139,13 +116,13 @@ if __name__ == '__main__':
                 #    show_future=True,
                 #    show_missing=True,      # include missed
                 #    show_false=True,        # include false positives
-                #    sigma_scale=1.0
+                #   sigma_scale=1.0
                 #)
 
+            # advance sim-time once per loop (no threads)
             t_global += dt
             
         evaluator.end_scenario(scenario)  
     evaluator.log_overall(len(scenarios))  
     
     #visualizer.close()
-         

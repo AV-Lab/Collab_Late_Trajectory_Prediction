@@ -10,6 +10,7 @@ from . import BasicIV
 from intelligent_vehicles.listener import Listener
 from intelligent_vehicles.filters import Filter
 from intelligent_vehicles.late_fusion import GPFuser
+from intelligent_vehicles.gates import KFGate
 import asyncio
 import time
 import logging
@@ -24,7 +25,7 @@ class AggregatingIV(BasicIV):
       - async listener consuming peer predictions and updating collaboration graph
     """
 
-    def __init__(self, name, detector_config, tracker_config, predictor_config, listener_config, parameters, sensors, data, channel_root):
+    def __init__(self, name, detector_config, tracker_config, predictor_config, listener_config, parameters, sensors, data, clock_step, channel_root):
         
         super().__init__(name,
                          detector_config,
@@ -32,12 +33,14 @@ class AggregatingIV(BasicIV):
                          predictor_config,
                          parameters,
                          sensors,
-                         data)
+                         data,
+                         clock_step)
         
         self._listener = Listener(root=channel_root, topic=listener_config["topic"], on_message=self.updtae_object_graph)
         self._listener.start_in_background()
         self.fuser = GPFuser()
-
+        self.kf_gate = KFGate(mode="simple", min_streak=2, cov_ratio_thr=2.0)
+        self.last_prediction_timestamp = None
 
     def close(self):
         """Call this when tearing down the vehicle to stop the background listener."""
@@ -45,21 +48,29 @@ class AggregatingIV(BasicIV):
             self._listener.stop_in_background()
         except Exception:
             pass
-        
-    def run_predictor(self, tracklets):
+
+    def run_predictor(self, tracklets, sim_time_s, trajectories):
         past_trajs = self.predictor.format_input(tracklets)
-        mean_trajs, cov_trajs = self.predictor.predict(past_trajs, 
-                                                       self.prediction_horizon, 
-                                                       self.prediction_sampling) 
+        mean_trajs, cov_trajs = self.predictor.predict(past_trajs) 
         
-        # wall-clock “now” in milliseconds (integer)
-        pred_ts_ms = time.time_ns() // 1_000_000   
-        self.last_prediction_timestamp = pred_ts_ms
+        pred_ts_ms = int(round(sim_time_s * 1000.0))
+        self.last_prediction_timestamp = pred_ts_ms  
+        ego_ts = list(mean_trajs[0].keys())
         self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
-        #logger.info(f"Run fusion, current state of the graph: {self.object_graph}")
-        preds_with_pools = self.object_graph.extract_pools()
-        fused_predictions = self.fuser.fuse(preds_with_pools)
-        self.object_graph.updtae_predictions(fused_predictions)
+        preds_with_pools = self.object_graph.extract_pools()   
+        
+        ids_to_idx = {t["id"]: idx for idx,t in enumerate(tracklets)}
+        gated_preds_with_pools = {}
+        for k,v in preds_with_pools.items():
+            if k in ids_to_idx:
+                kf_features = tracklets[ids_to_idx[k]]["kf_gate"]    
+                decision = self.kf_gate.decide(kf_features)
+                if not decision.passed:
+                    continue   
+            gated_preds_with_pools[k] = v
+        
+        fused_predictions = self.fuser.fuse(ego_ts, gated_preds_with_pools, trajectories)
+        self.object_graph.update_predictions(fused_predictions)
         self.object_graph.empty_pools()
         predictions = self.object_graph.extract_predictions()
         return predictions
@@ -82,37 +93,25 @@ class AggregatingIV(BasicIV):
             vehicle_location = payload["ego_position"]
             shared_predictions = payload["predictions"]
             
-            # Filter the shared predictions
-            #logger.info(f"Current state of the graph: {self.object_graph}")
-            
-            #print("Shared predictions", shared_predictions)
-            print("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR")
-            print(shared_predictions)
-            
+            # Filter predictions to match to ego step
             shared_predictions = Filter.filter_to_ego_prediction_step(shared_predictions, 
                                                                       self.last_prediction_timestamp,
                                                                       self.prediction_frequency,
                                                                       self.prediction_sampling) 
-            #print("Filtered shared predictions", shared_predictions)
             
             if len(shared_predictions) > 0:
                 # Run association for object-level category I nodes
                 objs_locations = [sp["cur_location"] for sp in shared_predictions]
-                matches = self.object_graph.match_shared_predictions(objs_locations)
-                #print("Found matches")
-                #print(matches)
+                matches, _, unmatched_predictions = self.object_graph.match_shared_predictions(objs_locations)
                 self.object_graph.update_pools(matches, shared_predictions)
                 logger.info(f"[{self.name}] processed remote packet: total {len(shared_predictions)}, associated {len(matches)}")
                 
                 # Add category II nodes 
-                #if self.cur_location:
-                #    matched_idx = set([match[0] for match in matches])
-                #    unmatched_predictions = [sp for i, sp in enumerate(shared_predictions) if i not in matched_idx]
-                #    self.object_graph.add_new_objects(self.cur_location, unmatched_predictions)
-                #    logger.info(f"[{self.name}] processed remote packet: total {len(shared_predictions)}, associated {len(matches)}, unmatched {len(unmatched_predictions)}")
+                if self.cur_location:
+                    added_ids = self.object_graph.add_new_objects(self.cur_location, unmatched_predictions, shared_predictions)
+                    logger.info(f"Total added nodes of category II: {len(added_ids)}")
             else: 
                 logger.info(f"[{self.name}] processed remote packet: no relevant shared predictions")
                  
         except Exception as e:
             logger.info(f"[{self.name}] failed to process remote packet, {e}")
-

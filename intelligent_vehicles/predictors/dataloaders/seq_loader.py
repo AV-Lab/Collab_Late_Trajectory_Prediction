@@ -35,12 +35,6 @@ from torch.utils.data import Dataset
 
 
 class SeqDataset(Dataset):
-    # ------------------------------------------------------------------ #
-    _CAT2IDX = {
-        "car": 0, "motorcycle": 1, "pedestrian": 2,
-        "van": 3, "truck": 4, "cyclist": 5
-    }
-    _NUM_CAT = len(_CAT2IDX)
 
     # ------------------------------------------------------------------ #
     def __init__(self, data_file: str, include_velocity: bool = True):
@@ -92,11 +86,7 @@ class SeqDataset(Dataset):
     # ------------------------------------------------------------------ #
     def __getitem__(self, idx):
         sample = self.data[idx]
-        
-        cat_vec = torch.tensor(self._CAT2IDX[sample["obs_cat"]], dtype=torch.long)
+        obs_arr = self._build_traj(np.asarray(sample["obs"]))     
+        tgt_arr = self._build_traj(np.asarray(sample["target"])) 
 
-        # ---- build trajectories ------------------------------------- #
-        obs_arr = self._build_traj(np.asarray(sample["obs"]))      # [L,7]
-        tgt_arr = self._build_traj(np.asarray(sample["target"]))   # [H,7]
-
-        return cat_vec, obs_arr, tgt_arr
+        return obs_arr, tgt_arr

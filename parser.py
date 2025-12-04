@@ -1,15 +1,12 @@
 import os
 import yaml
 import logging
-import sys
-
 
 SUPPORTED_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
 SUPPORTED_DETECTORS = {"gt", "gt_occ", "centerpoint"}
-SUPPORTED_PREDICTORS = {"lstm", "lstm_nll", "transformer"}
+SUPPORTED_PREDICTORS = {"lstm_nll", "transformer_nll"}
 SUPPORTED_TRACKERS = {"gt", "ab3dmot"}
-VALID_MODES = {"train", "eval"}
-
+SPLITS = {"train", "valid", "test"}
 
 def load_config(yaml_path: str) -> dict:
     """
@@ -24,22 +21,11 @@ def load_config(yaml_path: str) -> dict:
     return config
 
 
-def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, fps, logger: logging.Logger) -> dict:
+def validate_vehicle_config(vehicle_key, vehicle_dict, logger: logging.Logger) -> dict:
     """
     Validates and returns a cleaned-up vehicle dictionary with all required fields.
-    Raises ValueError if any required field is missing or invalid.
-    
-    vehicle_dict: e.g. from the YAML "ego_vehicle" or "vehicles.vehicle_1".
-    vehicle_key: string name used for error messaging.
-    logger: logger instance for logging validation messages.
     """
-
-    # name & type
-    if "name" not in vehicle_dict:
-        msg = f"Vehicle '{vehicle_key}' is missing required field 'name'."
-        logger.error(msg)
-        raise ValueError(msg)
-
+    
     if "type" not in vehicle_dict:
         msg = f"Vehicle '{vehicle_key}' is missing required field 'type'."
         logger.error(msg)
@@ -80,21 +66,13 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, fps, logger: l
         raise ValueError(msg)
 
     params = vehicle_dict["parameters"]
-    needed_params = ["fps", "prediction_horizon", "prediction_frequency", "prediction_sampling", "device"]
+    needed_params = ["prediction_frequency", "device", "prediction_horizon"]
     for p in needed_params:
         if p not in params:
             msg = f"Vehicle '{vehicle_key}' parameters is missing '{p}'."
             logger.error(msg)
             raise ValueError(msg)
 
-    # Optionally check valid FPS
-    if params["fps"] <= 0:
-        msg = (
-            f"Vehicle '{vehicle_key}' has negative fps '{params['fps']}'."
-        )
-        logger.error(msg)
-        raise ValueError(msg)
-        
 #_________________________________________________________________________________________________
 
     # Validate 'detector'
@@ -167,37 +145,10 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, fps, logger: l
             )
             logger.error(msg)
             raise ValueError(msg)
-        # predictor mode
-        if "mode" not in predictor:
-            msg = f"Vehicle '{vehicle_key}' predictor is missing 'mode' (train/eval)."
+        if "checkpoint" not in predictor:
+            msg = f"Vehicle '{vehicle_key}' predictor is in eval mode, you must provide checkpoint)."
             logger.error(msg)
             raise ValueError(msg)
-        if predictor["mode"] not in VALID_MODES:
-            msg = (
-                f"Vehicle '{vehicle_key}' predictor.mode='{predictor['mode']}' invalid. "
-                f"Must be one of {VALID_MODES}."
-            )
-            logger.error(msg)
-            raise ValueError(msg)
-        if predictor["mode"] == "eval":
-            if "checkpoint" not in predictor:
-                msg = f"Vehicle '{vehicle_key}' predictor is in eval mode, you must provide checkpoint)."
-                logger.error(msg)
-                raise ValueError(msg)
-            if "trained_fps" not in predictor:
-                predictor["trained_fps"] = None
-                msg = f"The predictor will attempt to load trained_fps (fps on which it was trained) from checkpoint)."
-                logger.info(msg)
-        if predictor["mode"] == "train":
-            if "data_path" not in predictor:
-                msg = f"Vehicle '{vehicle_key}' predictor is in train mode, you must provide data path to run training)."
-                logger.error(msg)
-                raise ValueError(msg)
-            if "save_path" not in predictor:
-                msg = f"Vehicle '{vehicle_key}' predictor is in train mode, you must provide save path where to train the checkpoint)."
-                logger.error(msg)
-                raise ValueError(msg)
-            predictor["trained_fps"] = fps # tha dataset fps
     else:
         msg = f"Vehicle '{vehicle_key}' predictor must be a dictionary."
         logger.error(msg)
@@ -250,11 +201,50 @@ def validate_vehicle_config(vehicle_dict: dict, vehicle_key: str, fps, logger: l
     logger.debug(f"Vehicle '{vehicle_key}' validated successfully.")
     return vehicle_dict
 
+def validate_dataset_block(dataset_block: dict, logger: logging.Logger) -> dict:
+    if "path" not in dataset_block or "split" not in dataset_block:
+        msg = "dataset block must contain 'path' and 'prefixes'."
+        logger.error(msg)
+        raise ValueError(msg)
+        
+    dataset_path = dataset_block["path"]
+    split = dataset_block["split"]
+    
+    if split not in SPLITS:
+        msg = (f"Dataset '{split}' is invalid, must be one of {SPLITS}.")
+        logger.error(msg)
+        raise ValueError(msg)
+    data = {}
+    prefix_path = os.path.join(dataset_path, split)
+    meta_file = os.path.join(prefix_path, "meta.txt")
+    data_file = os.path.join(prefix_path, f"{split}_data.pkl")
 
-###############################################################################
-# PARSE DEEPACCIDENT CONFIG
-###############################################################################
-def parse_deepaccident_config(config: dict, logger: logging.Logger) -> dict:
+    if os.path.isfile(data_file) and os.path.isfile(meta_file):
+            data["data_file"] = data_file
+            data["meta_file"] = meta_file
+            data["name"] = dataset_block["name"]
+    else:
+        msg = (
+            f"Either the file {data_file} or {meta_file} are missing, "
+            f"make sure you run preprocess for {dataset_block['name']}."
+        )
+        logger.error(msg)
+        raise ValueError(msg)
+    logger.debug(f"Dataset block validated: {data}")
+    
+    if "preprocessed" in dataset_block and dataset_block["preprocessed"]:
+        data["preprocessed"] = True
+        msg = ("You specified preprocessed tag, there WILL BE NO DATA PROCESSING "
+               "into individual vehcile observation during vehicles initialization."
+        )
+        logger.info(msg)
+    else:
+        data["preprocessed"] = False
+        
+    return data
+    
+
+def parse_config(config: dict, logger: logging.Logger) -> dict:
     """
     Parses and validates a DeepAccident YAML configuration, returning
     a dictionary with all parameters (dataset, ego_vehicle, vehicles, etc.).
@@ -262,87 +252,45 @@ def parse_deepaccident_config(config: dict, logger: logging.Logger) -> dict:
     Raises ValueError if any required field is missing or invalid.
     """
 
-    # 1) Validate dataset block
+    ########################## Validate dataset block
     if "dataset" not in config:
         msg = "Config must have a 'dataset' block."
         logger.error(msg)
         raise ValueError(msg)
     dataset_block = config["dataset"]
-    if "path" not in dataset_block or "prefixes" not in dataset_block:
-        msg = "dataset block must contain 'path' and 'prefixes'."
-        logger.error(msg)
-        raise ValueError(msg)
-    if "fps" not in dataset_block:
-        msg = "dataset block must contain fps of the dataset."
-        logger.error(msg)
-        raise ValueError(msg)
+    data = validate_dataset_block(dataset_block, logger)
 
-    dataset_path = dataset_block["path"]
-    prefixes = dataset_block["prefixes"]
-    data = {}
-
-    for prefix in prefixes:
-        prefix_path = os.path.join(dataset_path, prefix)
-        pickle_file = os.path.join(prefix_path, f"{prefix}_data.pkl")
-        
-        print(pickle_file)
-        if os.path.isfile(pickle_file):
-            data[prefix] = pickle_file
-        else:
-            msg = (
-                f"Either you specified prefix '{prefix}' which is out of dataset folder, "
-                f"or you did not run preprocess for '{prefix}' in {dataset_path}."
-            )
-            logger.error(msg)
-            raise ValueError(msg)
-    logger.debug(f"Dataset block validated: {data}")
-    
-    if "preprocessed" in dataset_block and dataset_block["preprocessed"]:
-        data["preprocessed"] = True
-        msg = "You specified preprocessed tag, there WILL BE NO DATA PROCESSING RUN during vehicles initialization"
-        logger.info(msg)
+    ########################## Validate vehicles
+    vehicles_dict = {}
+    if "vehicles" in config:
+        for vehicle_key, vehicle_val in config["vehicles"].items():
+            validated_vehicle = validate_vehicle_config(vehicle_key, vehicle_val, logger)
+            vehicles_dict[vehicle_key] = validated_vehicle
+        logger.debug(f"vehicles validated: {vehicles_dict}")
     else:
-        data["preprocessed"] = False
-         
-    # 2) Validate ego_vehicle
+        msg = "No 'vehicles' block found"
+        logger.error(msg)
+        raise ValueError(msg)
+
+    
+    ########################## Validate ego_vehicle
     if "ego_vehicle" not in config:
         msg = "Config must have an 'ego_vehicle' block."
         logger.error(msg)
         raise ValueError(msg)
-    ego_vehicle_block = validate_vehicle_config(config["ego_vehicle"], "ego_vehicle", dataset_block["fps"], logger)
-    logger.debug(f"ego_vehicle validated: {ego_vehicle_block}")
+    vehicles = set(vehicles_dict.keys())
+    if config["ego_vehicle"] not in vehicles:
+        msg = "Ego-vehicle must be from the list of the vehicles"
+        logger.error(msg)
+        raise ValueError(msg)
+    else:    
+        logger.debug(f"ego_vehicle validated: {config['ego_vehicle']} is ego")
 
-    # 3) Validate vehicles
-    vehicles_dict = {}
-    if "vehicles" in config:
-        for vehicle_key, vehicle_val in config["vehicles"].items():
-            validated_vehicle = validate_vehicle_config(vehicle_val, vehicle_key, dataset_block["fps"], logger)
-            vehicles_dict[vehicle_key] = validated_vehicle
-        logger.debug(f"vehicles validated: {vehicles_dict}")
-    else:
-        logger.info("No 'vehicles' block found. Proceeding with empty vehicles list.")
-
-    # 4) Assemble final
+    ########################## Parsed config 
     parsed_config = {
         "data": data,
-        "ego_vehicle": ego_vehicle_block,
+        "ego_vehicle": config["ego_vehicle"],
         "vehicles": vehicles_dict
     }
     logger.info("DeepAccident configuration parsed successfully.")
     return parsed_config
-
-
-###############################################################################
-# PARSE OPV2V CONFIG
-###############################################################################
-def parse_opv2v_config(yaml_path: str, logger: logging.Logger) -> dict:
-    # Future implementation
-    pass
-
-
-###############################################################################
-# PARSE V2V4REAL CONFIG
-###############################################################################
-def parse_v2v4real_config(yaml_path: str, logger: logging.Logger) -> dict:
-    # Future implementation
-    pass

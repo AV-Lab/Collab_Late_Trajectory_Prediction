@@ -19,64 +19,70 @@ from intelligent_vehicles.vehicles import BasicIV
 from intelligent_vehicles.vehicles import AggregatingIV
 from intelligent_vehicles.vehicles import BroadcastingIV 
 from intelligent_vehicles.vehicles import HybridIV 
-
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-def extract_vehicles_sensors_data(data, ivs):
+
+def parse_meta(meta_path):
+    scenarios = {}
+    meta_path = Path(meta_path)
+    with meta_path.open("r") as f:
+        lines = [ln.strip() for ln in f]
+
+    for line in lines[6:]:
+        scen, n = line.rsplit(",", 1)
+        scenarios[scen] = int(n)
     
-    sensors_data = {}
-    pkls = {k:v for k,v in data.items() if isinstance(v, str) and v.endswith("pkl")}
+    fps = int(lines[2].split("=")[1])
+    max_vehicles = int(lines[3].split("=")[1])
+                
+    return fps, max_vehicles, scenarios
+
+
+def extract_vehicles_sensors_data(data):
     
-    if data["preprocessed"]:
-        for iv in ivs:
-            sensors_data[iv] = {}
-            for prefix, pkl_path in pkls.items():
-                loc = "/".join(pkl_path.split("/")[:-2])
-                pickle_path = os.path.join(loc, f"{prefix}/{iv}_{prefix}_data.pkl")
-                if not os.path.isfile(pickle_path):
-                    logger.error(f"'{pickle_path}' does not exsist, please specify preprocessed as False in config.")
-                    exit()
-                sensors_data[iv][prefix] = pickle_path
-    else:
-        for prefix, pkl_path in pkls.items():
-            logger.info(f"Processing pickle file for prefix '{prefix}': {pkl_path}")
-            with open(pkl_path, "rb") as f:
-                dataset = pickle.load(f)
-                scenarios = dataset["scenarios"]
-                for scenario, vehicles_data in scenarios.items():
-                    for vehicle, ss_data in vehicles_data.items():
-                        if vehicle not in sensors_data:
-                            sensors_data[vehicle] = {}
-                        if prefix not in sensors_data[vehicle]:
-                            sensors_data[vehicle][prefix] = {}
-                        sensors_data[vehicle][prefix][scenario] = ss_data
-            logger.debug(f"Finished processing prefix '{prefix}'.")
+    meta_file = data["meta_file"]
+    data_file = data["data_file"] 
+    
+    fps, max_vehicles, scenarios_arr = parse_meta(meta_file)
+    loc = "/".join(data_file.split("/")[:-1])
+    sensors_data_paths = [os.path.join(loc, f"vehicle_{idx}.pkl") for idx in range(max_vehicles)]
+    
+    sensors_data = [{} for _ in range(max_vehicles)]
+    
+    if not data["preprocessed"]:
+        with open(data_file, 'rb') as f:
+            dataset = pickle.load(f)
+            scenarios = dataset["scenarios"]
+        
+            for scenario, vehicles_data in scenarios.items():
+                for idx, (vehicle, ss_data) in enumerate(vehicles_data.items()):
+                    sensors_data[idx][scenario] = ss_data 
+                idx += 1
+                
+                for i in range(max_vehicles-idx):
+                    sensors_data[idx+i][scenario] = "Nan"
               
-        # save each as vehicle + prefix as pkl
-        loc = "/".join(pkl_path.split("/")[:-2])
-        for vehicle_name, vehicle_data in sensors_data.items():
-            for prefix, data in vehicle_data.items():
-                output_pickle_path = os.path.join(loc, f"{prefix}/{vehicle_name}_{prefix}_data.pkl")
-                with open(output_pickle_path, 'wb') as f:
-                    pickle.dump(data, f)
-                    sensors_data[vehicle_name][prefix] = output_pickle_path
-                    print(f"Saved dataset to {output_pickle_path}")
-        # save data and return path to the dataset 
-    return sensors_data
+        for i, path in enumerate(sensors_data_paths):
+            with open(path, 'wb') as f:
+                pickle.dump(sensors_data[i], f)
+                print(f"Saved data to {path}")
+
+    return scenarios_arr, sensors_data_paths
     
 
-def initialize_vehicle(sensors_data, vehicle_params, channel_root):
-    logger.info(f"Initializing vehicle '{vehicle_params['name']}' of type '{vehicle_params['type']}'.")
-    vehicle_type = vehicle_params["type"]
-    name = vehicle_params["name"]
-    detector_config = vehicle_params["detector"]
-    tracker_config = vehicle_params["tracker"]
-    predictor_config = vehicle_params["predictor"]
-    parameters = vehicle_params["parameters"]
-    sensors = vehicle_params["sensors"]
-    broadcaster_config = vehicle_params.get("broadcaster", None)
-    listener_config = vehicle_params.get("listener", None)
+def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_root):
+    logger.info(f"Initializing vehicle '{veh_id}' of type '{veh_params['type']}'.")
+    vehicle_type = veh_params["type"]
+    name = veh_id
+    detector_config = veh_params["detector"]
+    tracker_config = veh_params["tracker"]
+    predictor_config = veh_params["predictor"]
+    parameters = veh_params["parameters"]
+    sensors = veh_params["sensors"]
+    broadcaster_config = veh_params.get("broadcaster", None)
+    listener_config = veh_params.get("listener", None)
 
     if vehicle_type == "aggregating":
         vehicle_obj = AggregatingIV(
@@ -88,6 +94,7 @@ def initialize_vehicle(sensors_data, vehicle_params, channel_root):
             parameters=parameters,
             sensors=sensors,
             data=sensors_data,
+            clock_step=clock_step,
             channel_root=channel_root
         )
     elif vehicle_type == "broadcasting":
@@ -100,6 +107,7 @@ def initialize_vehicle(sensors_data, vehicle_params, channel_root):
             parameters=parameters,
             sensors=sensors,
             data=sensors_data,
+            clock_step=clock_step,
             channel_root=channel_root
         )
     elif vehicle_type == "hybrid":
@@ -113,6 +121,7 @@ def initialize_vehicle(sensors_data, vehicle_params, channel_root):
             parameters=parameters,
             sensors=sensors,
             data=sensors_data,
+            clock_step=clock_step,
             channel_root=channel_root
         )
     else:
@@ -123,24 +132,28 @@ def initialize_vehicle(sensors_data, vehicle_params, channel_root):
             predictor_config=predictor_config,
             parameters=parameters,
             sensors=sensors,
-            data=sensors_data
+            data=sensors_data,
+            clock_step=clock_step
         )
     logger.info(f"Vehicle '{name}' initialized successfully.")
     return vehicle_obj
 
 
-def initialize_vehicles(data, ego_vehicle_dict, vehicles_dict, channel_root):
+def initialize_vehicles(config, clock_step, channel_root):
     logger.info("Extracting vehicles sensors data from pickle files.")
-    ivs = [iv_name["name"] for iv_name in vehicles_dict.values()]
-    ivs.extend([ego_vehicle_dict["name"]])
-    sensors_data = extract_vehicles_sensors_data(data, ivs)
-    logger.info("Initializing ego vehicle.")
-    ego_vehicle = initialize_vehicle(sensors_data[ego_vehicle_dict["name"]], ego_vehicle_dict, channel_root)
+    vehicles = config["vehicles"]
+    ego_vehicle = config["ego_vehicle"]
+    data = config["data"]
     
+    scenarios, sensors_data_paths = extract_vehicles_sensors_data(data)
     ivs = []
-    for vehicle_id, vehicle_params in vehicles_dict.items():
-        logger.info(f"Initializing vehicle '{vehicle_params['name']}' with ID '{vehicle_id}'.")
-        iv_obj = initialize_vehicle(sensors_data[vehicle_params["name"]], vehicle_params, channel_root)
-        ivs.append(iv_obj)
-    logger.info("All vehicles initialized successfully.")
-    return ego_vehicle, ivs
+    
+    for i, (veh_id, veh_params) in enumerate(vehicles.items()):
+        iv = initialize_vehicle(sensors_data_paths[i], veh_id, veh_params, clock_step, channel_root)
+        
+        if veh_id == ego_vehicle:
+            ego_iv = iv
+        else:
+            ivs.append(iv)
+
+    return scenarios, ego_iv, ivs

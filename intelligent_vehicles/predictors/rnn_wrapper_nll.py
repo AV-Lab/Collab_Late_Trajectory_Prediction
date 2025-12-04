@@ -8,43 +8,19 @@ Created on Tue May 27 12:56:44 2025
 
 
 import logging
-from queue import Queue
 import numpy as np 
-from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
 from intelligent_vehicles.predictors.sequential.rnn_nll import RNNPredictorNLL
-from intelligent_vehicles.predictors.dataloaders.seq_loader import SeqDataset
-from torch.utils.data import DataLoader
-from scipy.interpolate import interp1d
-import os
 
 class RNNWrapperNLL:
-    def __init__(self, prediction_config):
-        ## Add here all parameters
-        # Configuration 
-        if prediction_config["mode"] == "train":
-            prediction_config["checkpoint"] = None
-            prediction_config["hidden_size"] = 128
-            prediction_config["num_layers"] = 2
-            prediction_config["input_size"] = 2
-            prediction_config["output_size"] = 2
-    
-            # Training 
-            prediction_config["num_epochs"] = 30
-            prediction_config["learning_rate"] = 0.001
-            prediction_config["patience"] = 5
-            prediction_config["normalize"] = False
-            
-            prediction_config["observation_length"] = 10
-            prediction_config["prediction_horizon"] = 20
-            
-        self.batch_size = 128
+    def __init__(self, prediction_config):           
         self.predictor = RNNPredictorNLL(prediction_config)
-
-        if prediction_config["mode"] == "train":
-            self.train_predictor(prediction_config["data_path"], prediction_config["save_path"])
+        self.fps = self.predictor.trained_fps
+        self.observation_length = self.predictor.observation_length
+        self.prediction_horizon = self.fps * prediction_config["prediction_horizon"]
+        self.input_size = self.predictor.input_size
             
     def format_input(self, tracklets):
         """Collect past trajectories as arrays (no resampling)."""
@@ -54,37 +30,7 @@ class RNNWrapperNLL:
             past_trajs.append(np.array(traj))
         return past_trajs
       
-    def train_predictor(self, data_path, save_path):
-        if not os.path.isdir(data_path):
-            raise FileNotFoundError(f"Provided path does not exist or is not a directory: {data_path}")
-    
-        train_path = os.path.join(data_path, "train.pkl")
-        valid_path = os.path.join(data_path, "valid.pkl")
-        test_path  = os.path.join(data_path, "test.pkl")
-    
-        if not os.path.isfile(train_path):
-            raise FileNotFoundError(f"train.pkl is missing in: {data_path}")
-    
-        train_loader = DataLoader(SeqDataset(train_path), batch_size=self.batch_size, shuffle=True)
-        test_loader = None
-        valid_loader = None
-        
-        if os.path.isfile(test_path):
-            test_loader = DataLoader(SeqDataset(test_path), batch_size=self.batch_size, shuffle=False)
-            
-        if os.path.isfile(valid_path):
-            if test_loader is None:
-                test_loader = DataLoader(SeqDataset(valid_path), batch_size=self.batch_size, shuffle=False)
-            else:
-                valid_loader = DataLoader(SeqDataset(valid_path), batch_size=self.batch_size, shuffle=True)
-                
-        save_path = os.path.join(save_path, "lstm_predictor_nll.pth")
-        
-        self.predictor.train(train_loader, valid_loader, save_path)
-        self.predictor.evaluate(test_loader)
-
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~  predict  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    def predict(self, past_trajs, prediction_horizon, prediction_sampling):
+    def predict(self, past_trajs):
         """
         No resampling. Returns step-indexed dicts.
 
@@ -98,10 +44,10 @@ class RNNWrapperNLL:
             pred_covs  : list[dict]  # [{step: [[..],[..],...]} per-step Σ_pos], same keys
         """
 
-        pred_means, pred_covs = self.predictor.predict(past_trajs, prediction_horizon)
+        pred_means, pred_covs = self.predictor.predict(past_trajs, self.prediction_horizon)
 
-        dt = 1.0 / prediction_sampling 
-        H  = int(prediction_horizon * prediction_sampling)  
+        dt = 1.0 / self.fps 
+        H  = self.prediction_horizon 
         t_orig = np.arange(1, H + 1, dtype=np.float64) * dt
         
         mean_trajs, cov_trajs = [], []

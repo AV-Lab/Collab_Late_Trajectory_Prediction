@@ -25,7 +25,7 @@ class BroadcastingIV(BasicIV):
         collaboration_graph (object, optional): Collaboration graph object.
     """
     
-    def __init__(self, name, detector_config, tracker_config, predictor_config, broadcaster_config, parameters, sensors, data, channel_root):
+    def __init__(self, name, detector_config, tracker_config, predictor_config, broadcaster_config, parameters, sensors, data, clock_step, channel_root):
         
         super().__init__(name,
                          detector_config,
@@ -33,23 +33,25 @@ class BroadcastingIV(BasicIV):
                          predictor_config,
                          parameters,
                          sensors,
-                         data)
+                         data,
+                         clock_step)
         
         self.broadcasting_frequency = broadcaster_config["broadcasting_frequency"]
         self._broadcaster = Broadcaster(root=channel_root, topic=broadcaster_config["topic"])
         self.next_broadcasting_time = self.starting_time + 1.0
+        self.bcast_period = 1.0 / self.broadcasting_frequency
         
 
-    def _build_packet(self, predictions, ego_state):
-        # keep this schema stable; add fields as needed
+    def _build_packet(self, predictions, ego_state, sim_time):
         packet = {"sender": str(self.name),
-                  "broadcasting_timestamp": float(time.time()),
+                  "broadcasting_timestamp": float(sim_time),   
+                  "wall_time": float(time.time()),           
                   "fps": float(self.fps),
                   "pred_hz": float(self.prediction_frequency),
                   "pred_sampling": float(self.prediction_sampling),
                   "predictions": predictions}
         
-        if ego_state != None:
+        if ego_state is not None:
             packet["ego_position"] = {"x": float(ego_state.get("x", 0.0)),
                                       "y": float(ego_state.get("y", 0.0)),
                                       "z": float(ego_state.get("z", 0.0)),
@@ -59,26 +61,27 @@ class BroadcastingIV(BasicIV):
             
             
     def run(self, t, scenario=None):
-        # Check if it's time for observation
-        if abs(t - self.next_observation_time) <= self.delta:
-            frame_data = self.test_loader.get_frame_data(t)
-            self.next_observation_time += 1.0 / self.fps
+        response = None
+        
+        if (t + self.delta) >= self.next_observation_time:
+            frame_data = self.loader.get_frame_data(t)
+            self.next_observation_time += self.obs_period
             
-            if frame_data == None:
+            if frame_data is None:
                 logger.info(f"Vehicle {self.name} left the scene.")
                 self.next_observation_time = self.starting_time
                 self.next_prediction_time = self.starting_time + 1.0
                 self.next_broadcasting_time = self.starting_time + 1.0
                 return None
             
-            # if we recived observation 
+            # if we received observation 
             ego_state = frame_data["ego_state"]
             calibration = frame_data["calibration"]
             point_cloud = frame_data["lidar"]
             trajectories = frame_data["trajectories"]
             
             # update location
-            if ego_state != None:
+            if ego_state is not None:
                 self.cur_location = [{"x": ego_state["x"], 
                                       "y": ego_state["y"], 
                                       "z": ego_state["z"], 
@@ -91,20 +94,19 @@ class BroadcastingIV(BasicIV):
             # Update the tracker 
             tracklets = self.run_tracker(detections)
 
-            # Check if it's time for prediction ask tracker for active tracklets and run predict
-            response = None
-            if abs(t - self.next_prediction_time) <= self.delta: 
-                predictions = self.run_predictor(tracklets)
-                response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
-                self.next_prediction_time += 1.0 / self.prediction_frequency  
-                #response = (point_cloud, detections, ego_state)
             
-            # Check if it's time for broadcasting
-            if abs(t - self.next_broadcasting_time) <= self.delta: 
-                predictions = self.object_graph.extract_predictions()
-                packet = self._build_packet(predictions, ego_state) 
-                message_size_bytes = self._broadcaster.send(packet)
-                self.next_broadcasting_time += 1.0 / self.broadcasting_frequency  
-                logger.info(f"[{self.name}] send broadcast with message size {message_size_bytes}")
+            # Prediction gate (due-or-late)
+            if (t + self.delta) >= self.next_prediction_time: 
+                predictions = self.run_predictor(tracklets, t, trajectories)  # pass sim-time 't'
+                response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
+                self.next_prediction_time += self.pred_period  
+            
+        # Broadcasting gate (due-or-late)
+        if (t + self.delta) >= self.next_broadcasting_time: 
+            predictions = self.object_graph.extract_predictions(category_II_nodes=False)
+            packet = self._build_packet(predictions, ego_state, t)  # include sim-time
+            message_size_bytes = self._broadcaster.send(packet)
+            self.next_broadcasting_time += self.bcast_period  
+            logger.info(f"[{self.name}] send broadcast with message size {message_size_bytes}")
                 
-            return response
+        return response
