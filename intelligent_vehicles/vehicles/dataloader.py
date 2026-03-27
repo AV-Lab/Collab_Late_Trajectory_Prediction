@@ -11,6 +11,7 @@ import os
 import pickle
 import cv2
 import numpy as np
+import open3d as o3d
 import logging
 
 from collections import namedtuple
@@ -26,12 +27,11 @@ class TrajDataloader:
     
     After preloading, get_frame_data(t) returns all loaded sensor data plus trajectories for timestamp t.
     """
-    def __init__(self, pickle_path, sensors, fps):
+    def __init__(self, pickle_path, sensors, fps, global_coord):
         self.data_file = pickle_path
         self.sensors = sensors
         self.vehicle_fps = fps
-        
-        print(sensors)
+        self.global_coord = global_coord
         
     def extract_all_scenarios(self):
         with open(self.data_file, 'rb') as f:
@@ -57,7 +57,7 @@ class TrajDataloader:
         scenario_data = dataset.get(scenario_name, {})
         if not scenario_data:
             return False
-    
+         
         original_timestamps = sorted(scenario_data.keys())
     
         if len(original_timestamps) < 2:
@@ -81,11 +81,30 @@ class TrajDataloader:
             for sensor, path in frame_info.get("images", {}).items():
                 if sensor in self.sensors:
                     loaded['images'][sensor] = cv2.imread(path) if os.path.isfile(path) else None
-    
+                
             # Load LiDAR data
             lidar_path = frame_info.get("lidar", "")
             if lidar_path and os.path.isfile(lidar_path):
-                loaded['lidar'] = np.load(lidar_path)
+            
+                if lidar_path.endswith(".npy") or lidar_path.endswith(".npz"):
+                    loaded['lidar'] = np.load(lidar_path)
+                    if 'data' in loaded['lidar'].files:
+                        loaded['lidar'] = loaded['lidar']['data'][:, :3]
+            
+                elif lidar_path.endswith(".pcd"):
+                    pcd = o3d.io.read_point_cloud(lidar_path)
+                    pts = np.asarray(pcd.points, dtype=np.float32)
+                    loaded['lidar'] = pts[:, :3]
+                    
+                elif lidar_path.endswith(".bin"):
+                    arr = np.fromfile(str(lidar_path), dtype=np.float32)
+                    if arr.size % 4 != 0:
+                        arr = arr[: arr.size - (arr.size % 4)]
+                    pts = arr.reshape(-1, 4)
+                    loaded['lidar'] = pts[:, :3]
+                else:
+                    print(f"[WARN] Unsupported lidar format: {lidar_path}")
+                    loaded['lidar'] = None
             else:
                 loaded['lidar'] = None
     
@@ -97,6 +116,7 @@ class TrajDataloader:
     
         self.timestamps = sorted(self.loaded_frames.keys())
         self.trajectories = self._compute_trajectories()
+        
         return True
 
     def ego_motion_compensation(self, detections, calibration) -> List[Dict[str, float]]:
@@ -108,15 +128,15 @@ class TrajDataloader:
         detections   : list of dicts with keys at least
                        {'x','y','z','yaw', 'length','width','height', 'obj_id', ...}
         calibration  : {
-            'lidar_to_ego':   4×4 np.ndarray,
-            'ego_to_world':   4×4 np.ndarray
+            'lidar_to_ego':   4×4,
+            'ego_to_world':   4×4
           }
     
         Returns
         -------
         list of dicts in world frame (same objects, in-place edited & returned)
         """
-        T_lw = calibration["ego_to_world"] @ calibration["lidar_to_ego"]  # 4×4
+        T_lw = np.array(calibration["ego_to_world"]) @ np.array(calibration["lidar_to_ego"])
         R_lw = T_lw[:3, :3]
     
         # ego heading = yaw of LiDAR X-axis in world frame
@@ -154,12 +174,13 @@ class TrajDataloader:
         for t in self.timestamps:
             calib   = self.loaded_frames[t]['calibration']
             labels  = self.loaded_frames[t]['labels']
-            labels_w = self.ego_motion_compensation(labels, calib)  # NEW
+            if not self.global_coord:
+                labels = self.ego_motion_compensation(labels, calib)  
 
             # keep for later (debug / visualisation if you want)
-            self.loaded_frames[t]['labels_world'] = labels_w
+            self.loaded_frames[t]['labels_world'] = labels
     
-            for det in labels_w:
+            for det in labels:
                 oid = det['obj_id'] if isinstance(det, dict) else det.obj_id
                 trajectories.setdefault(oid, []).append((t, det))
     

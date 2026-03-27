@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 class GTWrapper:
     def __init__(self):
+        self.global_coordinates = True
         logger.info("The detections are taking from ground truth.") 
     
     def detect(self, frame_data):
@@ -46,9 +47,6 @@ class GTWrapper:
           'occ_score': s['occ_l1'],
           'obj_id': s['obj_id']} for s in frame_data["labels"]]
         return bboxs  
-
-
-    
     
     
 class GTOccWrapper:
@@ -75,6 +73,7 @@ class GTOccWrapper:
         self.noise_dist_gain  = 0.0 # no distance
 
         self.rng = np.random.default_rng(seed)
+        self.global_coordinates = True
 
  
     def _apply_mid_occ(self, det: Dict, occ: float, ego: Optional[Dict]) -> Optional[Dict]:
@@ -136,14 +135,6 @@ class GTOccWrapper:
                 'obj_id': s['obj_id'],
             }
 
-            # Medium occlusion: maybe drop or add minor xy noise
-            #if self.occ_mid_low < occ <= self.occ_mid_high:
-            #    det2 = self._apply_mid_occ(det, occ, ego)
-            #    if det2 is None:
-            #        continue
-            #    det = det2
-
-            # Low occlusion: keep as-is
             out.append(det)
 
         return out    

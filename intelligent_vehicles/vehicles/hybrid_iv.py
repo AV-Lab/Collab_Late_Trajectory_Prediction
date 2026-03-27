@@ -22,5 +22,19 @@ class HybridIV:
     """
     
 
-    def __init__(self, name, detector, tracker, predictor, broadcaster, parameters, sensors, data):
+    def __init__(self, 
+                 name, 
+                 detector_config, 
+                 tracker_config, 
+                 predictor_config, 
+                 broadcaster_config, 
+                 listener_config, 
+                 parameters, 
+                 sensors, 
+                 data, 
+                 clock_step, 
+                 channel_root, 
+                 global_coordinates):
         pass
+    
+    

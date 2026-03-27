@@ -26,23 +26,16 @@ class PredictorVisualizer(BBoxVisualizer):
     GREEN  = (0.10, 0.85, 0.25)   # ego
     ELLIPSE_TINT = 0.60           # lighten factor for covariance ellipses
 
-    def __init__(self, camera_height: float = 40.0, zoom_level: float = 0.1):
+    def __init__(self, camera_height: float = 40.0, zoom_level: float = 0.2):
         super().__init__(camera_height, zoom_level)
         self.trajectory_geometries = []
 
     # ---------- transforms ----------
-    @staticmethod
-    def _lidar_to_world(calib):
-        """Return 4x4 world-from-lidar transform."""
-        return calib["ego_to_world"] @ calib["lidar_to_ego"]
-
-    def update_cloud(self, pc_dict, calib):
-        xyz = pc_dict["data"][:, :3].astype(np.float32)
-        T = self._lidar_to_world(calib)
-        xyz_h = np.hstack([xyz, np.ones((xyz.shape[0], 1), dtype=np.float32)])
-        xyz_w = (T @ xyz_h.T).T[:, :3]
-        self.cloud.points = o3d.utility.Vector3dVector(xyz_w)
-        self.cloud.colors = o3d.utility.Vector3dVector(np.full_like(xyz_w, 1.0))
+    def update_cloud(self, pc_dict):
+        pc = pc_dict["data"] if "data" in pc_dict else pc_dict           
+        xyz = pc[:, :3].astype(np.float32)
+        self.cloud.points = o3d.utility.Vector3dVector(xyz)
+        self.cloud.colors = o3d.utility.Vector3dVector(np.full_like(xyz, 1.0))
         self.vis.update_geometry(self.cloud)
     #---------------------------------------------------------------------------------------
     
@@ -119,7 +112,6 @@ class PredictorVisualizer(BBoxVisualizer):
     def visualize_forecasts(
         self,
         point_cloud,
-        calib,
         ego_pose,
         forecasts: dict,
         show_past: bool = False,
@@ -129,19 +121,14 @@ class PredictorVisualizer(BBoxVisualizer):
         sigma_scale: float = 1.0,
     ):
 
-        self.update_cloud(point_cloud, calib)
+        self.update_cloud(point_cloud)
         
         for g in self.bbox_geometries + self.trajectory_geometries:
             self.vis.remove_geometry(g, reset_bounding_box=False)
         self.bbox_geometries.clear()
         self.trajectory_geometries.clear()
         
-        T = self._lidar_to_world(calib)
-        ego_w = T @ np.array([ego_pose["x"], ego_pose["y"], ego_pose["z"], 1.0])
-        Rlw = T[:3, :3]
         ego_world = dict(ego_pose)
-        ego_world["x"], ego_world["y"], ego_world["z"] = ego_w[:3]
-        ego_world["yaw"] = ego_pose["yaw"] + np.arctan2(Rlw[1, 0], Rlw[0, 0])
         cam_center = np.array([ego_world["x"], ego_world["y"], ego_world["z"]])
 
         self._ensure_fixed_label_colors()

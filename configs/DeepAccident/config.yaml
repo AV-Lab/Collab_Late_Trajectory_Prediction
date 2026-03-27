@@ -1,17 +1,18 @@
 dataset:
   name: "DeepAccident"
   path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/DeepAccident"
+  global_coordinates: false
   split: "valid" # ["train", "valid", "test"]
-  preprocessed: true
+  preprocessed: false
 
-ego_vehicle: "vehicle_2"
+ego_vehicle: "vehicle_4"
 
 vehicles:
   vehicle_1:
     type: "broadcasting"
     parameters:
       tracking_history: 20 # bbox to save 
-      keep_track: 5
+      keep_track: 10
       prediction_frequency: 10
       prediction_horizon: 2
       device: "cuda:0"
@@ -38,16 +39,16 @@ vehicles:
       - "lidar01"
 
   vehicle_2:
-    type: "basic"  # [basic, aggregating, broadcasting, hybrid]
+    type: "broadcasting"  # [basic, aggregating, broadcasting, hybrid]
     parameters:
       tracking_history: 20 # bbox to save 
-      keep_track: 5
+      keep_track: 10
       prediction_frequency: 10 
       prediction_horizon: 2
       device: "cuda:0" #options [cuda, cpu, cuda:1]
     
     detector:
-      name: "gt"    # [gt, centerpoint] 
+      name: "gt_occ"    # [gt, centerpoint] 
       #detections: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
     
     tracker:
@@ -67,13 +68,13 @@ vehicles:
     
     sensors:
       - "lidar01"
-
-
+      
+      
   vehicle_3:
     type: "broadcasting"
     parameters:
       tracking_history: 20 # bbox to save 
-      keep_track: 5
+      keep_track: 10
       prediction_frequency: 10
       prediction_horizon: 2
       device: "cuda:0"
@@ -90,35 +91,41 @@ vehicles:
       # "fps", "prediction_horizon", "prediction_sampling" are fetched form the predictor
     
     broadcaster:
-      broadcasting_frequency: 5
+      broadcasting_frequency: 10
+      topic: "pred"
+      
+    listener:
       topic: "pred"
     
     sensors:
       - "lidar01"
-    
-
+      
   vehicle_4:
-    type: "broadcasting"
+    type: "aggregating"
     parameters:
       tracking_history: 20 # bbox to save 
-      keep_track: 5
+      keep_track: 10
       prediction_frequency: 10
       prediction_horizon: 2
       device: "cuda:0"
-
+    
     detector:
-      name: "gt_occ"
-
+      name: "gt_occ"   
+     
     tracker:
       name: "gt"
-
+    
     predictor:
       name: "lstm_nll"
-      checkpoint: "train_predictor/checkpoints/DeepAccident_lstm_nll_10_20_10.pth"
-
+      checkpoint: "train_predictor/checkpoints/DeepAccident_lstm_nll_10_20_10.pth" 
+      # "fps", "prediction_horizon", "prediction_sampling" are fetched form the predictor
+    
     broadcaster:
       broadcasting_frequency: 10
       topic: "pred"
-
+      
+    listener:
+      topic: "pred"
+    
     sensors:
       - "lidar01"

@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Sat Jun  7 09:33:13 2025
+Transformer-based seq-2-seq predictor with Gaussian NLL (mean + variance)
+and covariance propagation to positions (similar style to RNNPredictorNLL).
 
-@author: nadya
-"""
-
-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Transformer-based seq-2-seq predictor **without data leakage in metrics**.
-
-Only three logical additions to the original file:
-
-  ▸ `_greedy_decode()` – causal inference helper  
-  ▸ ADE/FDE paths (train / validate / evaluate / predict) call that helper  
-  ▸ `save_checkpoint()` identical to RNN version
-
-Everything else (imports, parameter names, nested sub-modules, scheduled
-optimizer wrapper, etc.) stays intact so existing integration code keeps
-working unchanged.
+- The model outputs velocity mean + log-variance.
+- Training uses Gaussian NLL on velocities.
+- ADE/FDE are computed from the mean (causal greedy decode).
+- predict(...) returns per-step position means and diagonal covariances.
 """
 
 import math, os, sys
@@ -57,11 +44,12 @@ class ScheduledOptim:
             g['lr'] = lr
         self.opt.step()
 
-    def zero_grad(self): self.opt.zero_grad()
+    def zero_grad(self): 
+        self.opt.zero_grad()
 
 
 # ════════════════════════  Predictor  ════════════════════════════════ #
-class TransformerPredictor:
+class TransformerPredictorNLL:
 
     # ───────────────── helper sub-modules ────────────────── #
     class Linear_Embeddings(nn.Module):
@@ -104,22 +92,25 @@ class TransformerPredictor:
     class Seq2Seq(nn.Module):
         """
         Teacher-forcing pass only.  Autoregressive decoding is handled
-        by outer `_greedy_decode()` to avoid changing call-sites.
+        by outer `_greedy_decode()`.
         """
         def __init__(self, enc_in, pos_enc, encoder,
-                     decoder, dec_in, out_proj):
+                     decoder, dec_in, out_mu, out_logvar):
             super().__init__()
             self.enc_in, self.dec_in = enc_in, dec_in
             self.pos_enc = pos_enc
             self.encoder, self.decoder = encoder, decoder
-            self.out_proj = out_proj
+            self.out_mu = out_mu
+            self.out_logvar = out_logvar
 
         def forward(self, src, tgt_shifted, tgt_mask):
             # src : [B,T_enc,in_feat]     tgt_shifted : [B,T_dec,out_feat]
             memory = self.encoder(self.pos_enc(self.enc_in(src)))
             dec_in = self.pos_enc(self.dec_in(tgt_shifted))
             dec_out = self.decoder(tgt=dec_in, memory=memory, tgt_mask=tgt_mask)
-            return self.out_proj(dec_out)                     # [B,T_dec,out_feat]
+            mu     = self.out_mu(dec_out)        # [B,T_dec,out_feat]
+            logvar = self.out_logvar(dec_out)    # [B,T_dec,out_feat]
+            return mu, logvar
 
     # ─────────────────── constructor (same keys) ─────────────────── #
     def __init__(self, cfg: dict):
@@ -138,6 +129,9 @@ class TransformerPredictor:
 
         self.device = torch.device(cfg["device"])
         self.model_trained = False
+        
+        self.pos_size = 2
+        self.pos_slice = slice(0, self.pos_size)  # x,y
 
         ckpt = None
         if cfg.get("checkpoint"):
@@ -174,10 +168,12 @@ class TransformerPredictor:
                                                activation=self.actn)
         decoder = nn.TransformerDecoder(dec_layer, self.num_decoder_layers)
 
-        out_proj = nn.Linear(self.embedding_size, self.out_features)
+        # two heads: mean and log-variance of velocity
+        out_mu     = nn.Linear(self.embedding_size, self.out_features)
+        out_logvar = nn.Linear(self.embedding_size, self.out_features)
 
         self.model = self.Seq2Seq(enc_il, pos_enc, encoder,
-                                  decoder, dec_il, out_proj).to(self.device)
+                                  decoder, dec_il, out_mu, out_logvar).to(self.device)
 
         # optimiser
         base_opt = optim.Adam(self.model.parameters(),
@@ -190,9 +186,13 @@ class TransformerPredictor:
             self.model.load_state_dict(ckpt["model_state_dict"])
             self.optimizer.opt.load_state_dict(ckpt["optimizer_state_dict"])
 
-        self.criterion  = nn.MSELoss()
-        self.pos_size = 2
-        self.pos_slice  = slice(0, self.pos_size)
+        # Gaussian NLL params (same style as RNN)
+        self.var_floor  = 5e-3
+        self.logvar_min = -2.0
+        self.logvar_max = 6.0
+
+        self.pos_size  = 2
+        self.pos_slice = slice(0, self.pos_size)
 
     # ──────────────────────── utilities ──────────────────────── #
     @staticmethod
@@ -201,7 +201,7 @@ class TransformerPredictor:
         return m.masked_fill(m == 1, float('-inf'))
 
     @staticmethod
-    def _vel_to_pos(last_xy: torch.Tensor, vel_seq: torch.Tensor, pos_size):
+    def _vel_to_pos(last_xy: torch.Tensor, vel_seq: torch.Tensor, pos_size: int):
         vel_xy = vel_seq[:, :, :pos_size]
         out = torch.zeros_like(vel_xy)
         out[:, 0] = last_xy + vel_xy[:, 0]
@@ -209,26 +209,45 @@ class TransformerPredictor:
             out[:, t] = out[:, t-1] + vel_xy[:, t]
         return out
 
-    # ─────────────────── greedy autoregressive ─────────────────── #
-    def _greedy_decode(self, src_vel: torch.Tensor, steps: int) -> torch.Tensor:
+    def gaussian_nll_loss(self, y_true, mu, logvar):
         """
-        src_vel : [B,T_enc,in_feat]   returns [B,steps,out_feat]
+        Diagonal Gaussian NLL with per-dim heteroscedastic variance.
+        y_true, mu, logvar: [B, H, D]
+        """
+        logvar = torch.clamp(logvar, self.logvar_min, self.logvar_max)
+        var = torch.exp(logvar).clamp_min(self.var_floor)
+        nll = 0.5 * (logvar + (y_true - mu) ** 2 / var)
+        return nll.mean()
+
+    # ─────────────────── greedy autoregressive ─────────────────── #
+    def _greedy_decode(self, src_vel: torch.Tensor, steps: int):
+        """
+        src_vel : [B,T_enc,in_feat]
+        Returns:
+          mu_seq  : [B,steps,out_features]
+          logvar_seq : [B,steps,out_features]
         """
         B = src_vel.size(0)
         memory = self.model.encoder(
             self.model.pos_enc(self.model.enc_in(src_vel))
         )
-        ys = torch.zeros(B, 1, self.out_features, device=self.device)  # BOS
-        out = []
+        ys = torch.zeros(B, 1, self.out_features, device=self.device)  # BOS in velocity space
+        mu_outs, lv_outs = [], []
+
         for _ in range(steps):
             dec_in = self.model.pos_enc(self.model.dec_in(ys))
             tgt_mask = self._causal_mask(dec_in.size(1), self.device)
             dec_out = self.model.decoder(tgt=dec_in, memory=memory,
                                          tgt_mask=tgt_mask)
-            next_tok = self.model.out_proj(dec_out[:, -1:, :])          # [B,1,F]
-            out.append(next_tok)
-            ys = torch.cat([ys, next_tok.detach()], dim=1)
-        return torch.cat(out, dim=1)                                    # [B,steps,F]
+            mu     = self.model.out_mu(dec_out[:, -1:, :])      # [B,1,F]
+            logvar = self.model.out_logvar(dec_out[:, -1:, :])  # [B,1,F]
+            mu_outs.append(mu)
+            lv_outs.append(logvar)
+            ys = torch.cat([ys, mu.detach()], dim=1)
+
+        mu_seq  = torch.cat(mu_outs, dim=1)
+        lv_seq  = torch.cat(lv_outs, dim=1)
+        return mu_seq, lv_seq
 
     # ───────────────────────  training  ───────────────────────── #
     def train(self, train_loader, valid_loader=None, save_path=None):
@@ -249,7 +268,7 @@ class TransformerPredictor:
                     obs, tgt = batch
                 obs, tgt = obs.to(self.device), tgt.to(self.device)
 
-                src_vel = obs[:, :, self.pos_size:self.pos_size+self.in_features]            # teacher forcing
+                src_vel = obs[:, :, self.pos_size:self.pos_size+self.in_features]
                 tgt_vel = tgt[:, :, self.pos_size:self.pos_size+self.out_features]
 
                 tgt_in = torch.zeros_like(tgt_vel)
@@ -257,20 +276,20 @@ class TransformerPredictor:
                 tgt_mask = self._causal_mask(tgt_in.size(1), self.device)
 
                 self.optimizer.zero_grad()
-                pred_tf = self.model(src_vel, tgt_in, tgt_mask)
-                loss = self.criterion(pred_tf, tgt_vel)
+                mu_tf, lv_tf = self.model(src_vel, tgt_in, tgt_mask)
+                loss = self.gaussian_nll_loss(tgt_vel, mu_tf, lv_tf)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.)
                 self.optimizer.step_and_update_lr()
                 running_loss += loss.item()
 
-                # greedy metrics
-                pred_gd = self._greedy_decode(src_vel, tgt_vel.size(1))
+                # greedy metrics (use velocity mean)
+                mu_gd, _ = self._greedy_decode(src_vel, tgt_vel.size(1))
                 last_xy = obs[:, -1, self.pos_slice]
-                ade = calculate_ade(self._vel_to_pos(last_xy, pred_gd, self.pos_size),
-                                    tgt[:, :, self.pos_slice])
-                fde = calculate_fde(self._vel_to_pos(last_xy, pred_gd, self.pos_size),
-                                    tgt[:, :, self.pos_slice])
+                pred_pos = self._vel_to_pos(last_xy, mu_gd, self.pos_size)
+                tgt_pos  = tgt[:, :, self.pos_slice]
+                ade = calculate_ade(pred_pos, tgt_pos)
+                fde = calculate_fde(pred_pos, tgt_pos)
                 running_ade += ade; running_fde += fde
                 pbar.set_postfix(loss=f"{loss.item():.5f}",
                                  ADE=f"{ade:.4f}", FDE=f"{fde:.4f}")
@@ -307,13 +326,13 @@ class TransformerPredictor:
                 obs, tgt = obs.to(self.device), tgt.to(self.device)
 
                 src_vel = obs[:, :, self.pos_size:self.pos_size+self.in_features]
-                pred_gd = self._greedy_decode(src_vel, tgt.size(1))
+                mu_gd, _ = self._greedy_decode(src_vel, tgt.size(1))
 
                 last_xy = obs[:, -1, self.pos_slice]
-                ade += calculate_ade(self._vel_to_pos(last_xy, pred_gd, self.pos_size),
-                                     tgt[:, :, self.pos_slice])
-                fde += calculate_fde(self._vel_to_pos(last_xy, pred_gd, self.pos_size),
-                                     tgt[:, :, self.pos_slice])
+                pred_pos = self._vel_to_pos(last_xy, mu_gd, self.pos_size)
+                tgt_pos  = tgt[:, :, self.pos_slice]
+                ade += calculate_ade(pred_pos, tgt_pos)
+                fde += calculate_fde(pred_pos, tgt_pos)
 
         ade /= len(loader); fde /= len(loader)
         if not silent:
@@ -321,38 +340,90 @@ class TransformerPredictor:
         return ade, fde
 
     # ─────────────────────── inference  ──────────────────────── #
-    def predict(self, trajs: List[np.ndarray], prediction_horizon: float):
+    def predict(self, trajs, prediction_horizon):
         """
-        trajs : list of np.ndarray, each [T_obs, in_features]
-        prediction_horizon : seconds  (converted with trained_fps)
-        returns list[np.ndarray] with shape [H, out_features]
+        Make this Transformer predictor behave like the LSTM predictor.
+    
+        trajs : list of np.ndarray, each [T_obs, in_features_total]
+        prediction_horizon : *number of steps* (same semantics as LSTM)
+    
+        Returns:
+          predictions  : list[np.ndarray] each [H, pos_dim] position means
+          covariances  : list[np.ndarray] each [H, pos_dim, pos_dim] diag covs
         """
         if not self.model_trained:
             raise RuntimeError("Model not trained / loaded.")
-
+    
         self.model.eval()
-        steps = int(round(prediction_horizon * self.trained_fps))
-        src_vel_batch, last_xy_batch = [], []
+    
+        # LSTM treats prediction_horizon as "H" directly (not seconds)
+        H = int(round(prediction_horizon))
+    
+        vel_batch, last_pos_batch = [], []
+    
+        # ---- build velocity histories exactly like LSTM version ----
         for tr in trajs:
-            t = torch.tensor(tr, dtype=torch.float32, device=self.device)
-            last_xy_batch.append(t[-1, self.pos_slice])
-            vel = t[1:] - t[:-1]
-            pad = self.past_trajectory - 1 - vel.size(0)
-            if pad > 0:
-                vel = torch.cat([torch.zeros(pad, self.in_features,
-                                             device=self.device), vel])
-            src_vel_batch.append(vel[:, self.pos_size:self.pos_size+self.in_features])
-        src_vel_batch = torch.stack(src_vel_batch)         # [B,T_enc,4]
-        last_xy_batch = torch.stack(last_xy_batch)         # [B,2]
-
+            t = torch.tensor(tr, dtype=torch.float32, device=self.device)  # [T_obs, in_features_total]
+    
+            # last observed position (x,y or x,y,z etc.) using the same slice as LSTM
+            last_pos_batch.append(t[-1, self.pos_slice])                   # [pos_dim]
+    
+            # frame-to-frame velocity
+            vel = t[1:] - t[:-1]                                           # [T_obs-1, in_features_total]
+    
+            # truncate/pad to fixed history length: observation_length - 1
+            if vel.size(0) > self.past_trajectory - 1:
+                vel = vel[-(self.past_trajectory - 1):]
+            else:
+                pad_len = self.past_trajectory - 1 - vel.size(0)
+                if pad_len > 0:
+                    zpad = torch.zeros(pad_len, vel.size(1), device=self.device)
+                    vel = torch.cat([zpad, vel], dim=0)
+    
+            vel_batch.append(vel)
+    
+        vel_batch     = torch.stack(vel_batch)              # [B, T_enc, in_features_total]
+        last_pos_batch = torch.stack(last_pos_batch)        # [B, pos_dim]
+    
+        # use the first self.in_features channels of velocity as model input,
+        # analogous to enc_in = vel_batch[:, :, :self.input_size] in the LSTM code
+        src_vel_batch = vel_batch[:, :, :self.in_features]  # [B, T_enc, in_features]
+    
         with torch.no_grad():
-            pred_vel = self._greedy_decode(src_vel_batch, steps)
+            # ---- Transformer decoding, but with the same semantics as LSTM ----
+            # outputs mean velocities and log-variance
+            mu_v, lv_v = self._greedy_decode(src_vel_batch, H)   # [B, H, out_dim]
+    
+            # map log-variance -> variance as in training: exp(clamp) + floor
+            lv_v = torch.clamp(lv_v, self.logvar_min, self.logvar_max)
+            var_v = torch.exp(lv_v).clamp_min(self.var_floor)     # [B, H, out_dim]
+    
+            B = mu_v.size(0)
+            pos_means, pos_covs = [], []
+    
+            for i in range(B):
+                # last_pos: [pos_dim]
+                last_pos = last_pos_batch[i]
+    
+                # predicted mean velocities for position dims
+                mu_v_i = mu_v[i:i+1, :, :self.pos_size]          # [1, H, pos_dim]
+    
+                # integrate velocities -> positions (same helper as LSTM)
+                pos_mean_i = self._vel_to_pos(last_pos, mu_v_i, self.pos_size)[0]  # [H, pos_dim]
+                pos_means.append(pos_mean_i)
+    
+                # diagonal covariance: cumulative sum of per-step velocity variances
+                var_v_i = var_v[i:i+1, :, :self.pos_size]        # [1, H, pos_dim]
+                pos_var = torch.cumsum(var_v_i, dim=1)[0]        # [H, pos_dim]
+                pos_cov_i = torch.diag_embed(pos_var)            # [H, pos_dim, pos_dim]
+                pos_covs.append(pos_cov_i)
+    
+        # convert to lists-of-arrays (like LSTM predict)
+        predictions = [pos_means[i].cpu().numpy() for i in range(B)]   # each [H, pos_dim]
+        covariances = [pos_covs[i].cpu().numpy()  for i in range(B)]   # each [H, pos_dim, pos_dim]
+    
+        return predictions, covariances
 
-        preds = []
-        for i in range(len(trajs)):
-            pos = self._vel_to_pos(last_xy_batch[i:i+1], pred_vel[i:i+1], self.pos_size)[0]
-            preds.append(pos.cpu().numpy())
-        return preds
 
     # ───────────────────── checkpoint I/O ─────────────────────── #
     def save_checkpoint(self, path):

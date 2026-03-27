@@ -5,7 +5,7 @@ import logging
 SUPPORTED_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
 SUPPORTED_DETECTORS = {"gt", "gt_occ", "centerpoint"}
 SUPPORTED_PREDICTORS = {"lstm_nll", "transformer_nll"}
-SUPPORTED_TRACKERS = {"gt", "ab3dmot"}
+SUPPORTED_TRACKERS = {"gt", "3d"}
 SPLITS = {"train", "valid", "test"}
 
 def load_config(yaml_path: str) -> dict:
@@ -94,7 +94,7 @@ def validate_vehicle_config(vehicle_key, vehicle_dict, logger: logging.Logger) -
         # or you provide a checkpoint and in wrapper load from it
         # only if detector is gt, the checkpoint field can be omitted 
         if not(det_name == "gt" or det_name == "gt_occ"):
-            if "det_path" not in detector:
+            if "detections" not in detector:
                 msg = f"Vehicle '{vehicle_key}' detector, you must provide checkpoint or detections folder path)."
                 logger.error(msg)
                 raise ValueError(msg)   
@@ -184,7 +184,29 @@ def validate_vehicle_config(vehicle_key, vehicle_dict, logger: logging.Logger) -
         if "topic" not in listener:
             msg = f"Vehicle '{vehicle_key}' listener missing 'listener topic'."
             logger.error(msg)
-            raise ValueError(msg)            
+            raise ValueError(msg)  
+        if "drop" in listener:
+            if not isinstance(listener["drop"], bool):
+                msg = f"Vehicle '{vehicle_key}' listener.drop must be a boolean."
+                logger.error(msg)
+                raise ValueError(msg)
+        else:
+            vehicle_dict["listener"]["drop"] = False
+            
+        if "delay" in listener:
+            delay = listener["delay"]
+            if not isinstance(delay, dict):
+                msg = f"Vehicle '{vehicle_key}' listener.delay must be a dictionary."
+                logger.error(msg)
+                raise ValueError(msg)
+    
+            # allow partial specification; Listener will treat missing as zero-delay
+            for key in ("k", "mu", "var"):
+                if key in delay and not isinstance(delay[key], (int, float)):
+                    msg = f"Vehicle '{vehicle_key}' listener.delay.{key} must be a number."
+                    logger.error(msg)
+                    raise ValueError(msg)
+
 #_________________________________________________________________________________________________
 
 
@@ -231,6 +253,16 @@ def validate_dataset_block(dataset_block: dict, logger: logging.Logger) -> dict:
         logger.error(msg)
         raise ValueError(msg)
     logger.debug(f"Dataset block validated: {data}")
+    
+    if "global_coordinates" in dataset_block and dataset_block["global_coordinates"]:
+        data["global_coordinates"] = True
+        msg = ("You specified that the dataset detection and ego state are in global coordinates.")
+        logger.info(msg)
+    else:
+        data["global_coordinates"] = False
+        msg = ("The dataset detections and ego state are in local lidar coordinates, transformation will be applied.")
+        logger.info(msg)
+        
     
     if "preprocessed" in dataset_block and dataset_block["preprocessed"]:
         data["preprocessed"] = True

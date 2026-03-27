@@ -1,28 +1,42 @@
-# listener/listener.py
 import asyncio
 import logging
 import threading
+import heapq
+import math
+import itertools
 
 import msgpack
 import numpy as np
 import zmq
 import zmq.asyncio as azmq
 import zstandard as zstd
+import os
 
 logger = logging.getLogger(__name__)
 
-
-# listener/listener.py
-import asyncio, msgpack, zmq, zmq.asyncio as azmq, threading, logging
-import zstandard as zstd
-logger = logging.getLogger(__name__)
 
 class Listener:
-    def __init__(self, root: str, topic: str, on_message):
+    """
+    Unified strategy:
+      - Always receives messages asynchronously and buffers them with an arrival timestamp.
+      - Delay model uses (k, mu, var):
+            Δ(b) = k * b + LogNormal(mu, sigma),  sigma = sqrt(var)
+        If any of (mu, var) is None -> stochastic term = 0
+        If k is None -> k = 0
+      - Optional packet drop based on packet size.
+      - Main thread calls pop_arrived(sim_time_ms) to get messages that are available.
+
+    NOTE: on_message is kept in the signature for backward compatibility,
+          but is NOT used (no async thread graph updates).
+    """
+
+    def __init__(self, root: str, topic: str, on_message=None, k=None, mu=None, var=None, drop=False):
         # config
         self._root = root
         self._topic = topic
-        self._on_message = on_message
+        self._topic_b = topic.encode("utf-8")
+        self._on_message = on_message  # kept but unused by design
+        self._drop = bool(drop)
 
         # runtime
         self._ctx = None
@@ -36,25 +50,41 @@ class Listener:
         # decompress once, reuse
         self._zd = zstd.ZstdDecompressor()
 
-    # -------------------- decoding helpers --------------------
+        # -------------------- delay params (optional) --------------------
+        self._k = 0.0 if k is None else float(k)  # ms/byte
+        self._mu = None if mu is None else float(mu)
+        self._sigma = None if var is None else math.sqrt(float(var))
+
+        # Buffer: (arrival_ms:int, seq:int, topic:bytes, payload:dict)
+        self._buf_lock = threading.Lock()
+        self._buf_heap = []
+        self._seq = itertools.count()
+
+        # RNG for sampling (deterministic seed for reproducibility)
+        self._rng = np.random.default_rng(0)
+
+        if (self._mu is None) or (self._sigma is None):
+            logger.info("[Listener] delay: k=%.6f ms/B, LogNormal disabled (mu/var not provided) -> Δ=b*k", self._k)
+        else:
+            logger.info("[Listener] delay: k=%.6f ms/B, LogNormal(mu=%.3f, sigma=%.3f)", self._k, self._mu, self._sigma)
+
+        logger.info("[Listener] packet drop: %s", "enabled" if self._drop else "disabled")
+
+        self._delay_log_path = "listener_delay_log.txt"
+        if os.path.exists(self._delay_log_path):
+            os.remove(self._delay_log_path)
 
     @staticmethod
     def _expand_entry(entry):
-        """
-        Compact entry:
-          { "c": str, "b": [bx,by], "T": [t_ms...], "P": [[dx_cm,dy_cm]...],
-            "V": [[varx_centi,vary_centi]...], "tt": <pred_ts_ms> }
-        """
-        
-        loc = [q / 100.0 for q in entry["b"]]
+        loc = [v / 100.0 for v in entry["b"]]
         bx, by = loc[0], loc[1]
         t_s = [tm / 1000.0 for tm in entry["T"]]
         xy = [[bx + dx / 100.0, by + dy / 100.0] for dx, dy in entry["P"]]
         cov = [[[vx / 100.0, 0.0], [0.0, vy / 100.0]] for vx, vy in entry["V"]]
-        pred_ts_ms = int(entry.get("tt", 0))  # <-- include prediction timestamp (ms)
+        pred_ts_ms = int(entry.get("tt", 0))
 
         return {
-            "id":entry["id"],
+            "id": entry["id"],
             "category": str(entry["c"]),
             "cur_location": loc,
             "pred_ts_ms": pred_ts_ms,
@@ -67,15 +97,6 @@ class Listener:
 
     @staticmethod
     def _expand_packet(pkt):
-        """
-        Compact packet ->
-        {
-          "sender": str, "timestamp_ms": int,
-          "fps": float, "pred_hz": float, "pred_sampling": float,
-          "ego_position": {"x":..., "y":..., "z":..., "yaw":...},
-          "predictions": [expanded_entry, ...]
-        }
-        """
         ego = pkt.get("ego", [0.0, 0.0, 0.0, 0.0])
         expanded = {
             "sender": str(pkt.get("s", "")),
@@ -91,8 +112,41 @@ class Listener:
             },
             "predictions": [Listener._expand_entry(e) for e in (pkt.get("pred") or [])],
         }
-            
         return expanded
+
+    # -------------------- buffering API --------------------
+
+    def _sample_delay_ms(self, bytes_len: int) -> int:
+        d = self._k * float(bytes_len)
+        if (self._mu is not None) and (self._sigma is not None):
+            d += float(self._rng.lognormal(mean=self._mu, sigma=self._sigma))
+        if d < 0.0:
+            print(d)
+            print(self._k * float(bytes_len))
+            exit()
+            d = 0.0
+        return int(round(d))
+
+    def _should_drop_packet(self, bytes_len: int) -> bool:
+        if not self._drop:
+            return False
+
+        if bytes_len <= 400:
+            p_drop = 0.0
+        elif bytes_len <= 900:
+            p_drop = 0.08
+        else:
+            p_drop = 0.1
+
+        return bool(self._rng.random() < p_drop)
+
+    def pop_arrived(self, sim_time_ms: int):
+        out = []
+        with self._buf_lock:
+            while self._buf_heap and self._buf_heap[0][0] <= int(sim_time_ms):
+                _, _, topic, payload = heapq.heappop(self._buf_heap)
+                out.append((topic, payload))
+        return out
 
     # -------------------- async receive loop --------------------
 
@@ -101,11 +155,10 @@ class Listener:
         self._running = True
         try:
             while self._running:
-                topic, flag, data = await self._sock.recv_multipart()   # always 3 parts
-                if topic != self._topic.encode("utf-8"):
+                topic, flag, data = await self._sock.recv_multipart()  # [topic, flag, data]
+                if topic != self._topic_b:
                     continue
-    
-                # always compressed → decompress
+
                 if flag != b"z":
                     logger.warning("[Listener] unexpected flag=%r (expected b'z')", flag)
                 try:
@@ -114,10 +167,8 @@ class Listener:
                     logger.exception("[Listener] zstd decompress failed")
                     continue
 
-                # unpack and expand
                 try:
                     pkt = msgpack.unpackb(raw, raw=False)
-                    # detect compact; compact has "pred" & short keys
                     if isinstance(pkt, dict) and "pred" in pkt and "s" in pkt:
                         payload = self._expand_packet(pkt)
                     else:
@@ -126,13 +177,25 @@ class Listener:
                     logger.exception("[Listener] msgpack unpack/expand failed")
                     continue
 
-                # dispatch (supports async or sync callback)
+                # ALWAYS buffer with arrival time
                 try:
-                    res = self._on_message(topic, payload)
-                    if asyncio.iscoroutine(res):
-                        await res
+                    send_ms = int(payload.get("timestamp_ms", 0))
+                    bytes_len = int(len(data))  # compressed payload size (bytes)
+
+                    if self._should_drop_packet(bytes_len):
+                        continue
+
+                    delay_ms = self._sample_delay_ms(bytes_len)
+                    arrival_ms = send_ms + delay_ms
+
+                    with open(self._delay_log_path, "a") as f:
+                        f.write(f"{bytes_len},{delay_ms}\n")
+                    # -------------------------------------------------------------------
+
+                    with self._buf_lock:
+                        heapq.heappush(self._buf_heap, (arrival_ms, next(self._seq), topic, payload))
                 except Exception:
-                    logger.exception("[Listener] on_message handler failed")
+                    logger.exception("[Listener] buffering failed")
 
         except asyncio.CancelledError:
             pass
@@ -159,13 +222,12 @@ class Listener:
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
 
-                # context & socket must be created in this thread
                 self._ctx = azmq.Context.instance()
                 self._sock = self._ctx.socket(zmq.SUB)
                 self._sock.setsockopt(zmq.LINGER, 0)
                 self._sock.setsockopt(zmq.RCVHWM, 1000)
                 self._sock.connect(f"{self._root}.out")
-                self._sock.setsockopt(zmq.SUBSCRIBE, self._topic.encode("utf-8"))
+                self._sock.setsockopt(zmq.SUBSCRIBE, self._topic_b)
 
                 self._task = self._loop.create_task(self._loop_coro())
                 self._started_evt.set()

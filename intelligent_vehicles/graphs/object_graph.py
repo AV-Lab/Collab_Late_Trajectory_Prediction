@@ -31,7 +31,8 @@ class ObjectGraph:
             self.category = category
             self.cur_location = cur_location
             self.last_updated = timestamp
-            self.future_trajectory = {"pred": mean_traj, "cov": cov_traj}
+            self.future_trajectory = {"pred": mean_traj, "cov": cov_traj}             # Ego / original prediction
+            self.fused_trajectory = None             # Fused prediction (e.g., from GP fusion)
             self.type = int(type_) 
             self.pool = []   
             self.life_span = True
@@ -41,6 +42,7 @@ class ObjectGraph:
                 f"Node(cat={self.category}, type={self.type}, "
                 f"pos={self.cur_location}, "
                 f"pred={self.future_trajectory}, "
+                f"fused_pred={self.fused_trajectory}, "
                 f"pool={self.pool})"
             )
 
@@ -72,6 +74,8 @@ class ObjectGraph:
         node.cur_location = cur_pos
         node.last_updated = t
         node.future_trajectory = {"pred": mean_traj, "cov": cov_traj}
+        # New ego prediction → fused result is now stale; reset it
+        node.fused_trajectory = None
         self.G.nodes[node_id]['node_data'] = node
 
     def add_node_category_I(self, node_id, category, cur_pos, t, mean_traj, cov_traj):
@@ -183,10 +187,11 @@ class ObjectGraph:
         if len(self.G.nodes) == 0 or len(objs_locations) == 0:
             return [], list(self.G.nodes), list(range(len(objs_locations)))
 
-        # Collect node ids and their 2D positions
+        # Collect node ids and their positions
         node_ids = list(self.G.nodes)
         Gpos = np.array([np.asarray(self.G.nodes[nid]['node_data'].cur_location[:2]) for nid in node_ids], dtype=float)
         Opos = np.array([np.asarray(loc[:2]) for loc in objs_locations], dtype=float)  # shape (M, 2)
+        
 
         # Build (N x M) cost matrix of Euclidean distances
         diff = Gpos[:, None, :] - Opos[None, :, :]
@@ -212,7 +217,7 @@ class ObjectGraph:
 
         return matches, unmatched_nodes, unmatched_objects
 
-    def add_new_objects(self, ego_location, unmatched_predictions, shared_predictions, max_dist=50):
+    def add_new_objects(self, ego_location, unmatched_predictions, shared_predictions, max_dist=25):
         """
         Add remote/broadcast objects that aren't matched to local tracks, only if
         they are within `max_dist` meters from ego (2D distance).
@@ -257,12 +262,12 @@ class ObjectGraph:
     
     def update_predictions(self, fused_predictions):
         """
-        Overwrite nodes' future_trajectory with fused predictions.
+        Overwrite nodes' fused_trajectory with fused predictions.
         fused_predictions: {node_id: {"pred": {t:[x,y]}, "cov": {t:[[2x2]]}}}
         """
         for k, v in fused_predictions.items():
             pred = {"pred": v["pred"], "cov": v["cov"]}
-            self.G.nodes[k]['node_data'].future_trajectory = pred
+            self.G.nodes[k]['node_data'].fused_trajectory = pred
             
     def extract_predictions(self, category_II_nodes=True):
         """
@@ -280,6 +285,7 @@ class ObjectGraph:
                 "cur_location": node.cur_location,
                 "timestamp": node.last_updated,
                 "prediction": node.future_trajectory,
+                "fused_prediction": node.fused_trajectory,
             })
         return out
 
@@ -296,7 +302,7 @@ class ObjectGraph:
     def extract_pools(self):
         """
         Return a dict:
-          {node_id: (last_updated, future_trajectory, pool)}
+          {node_id: (last_updated, future_trajectory, pool, node.type)}
         """
         res = {}
         for nid in self.G.nodes:

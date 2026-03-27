@@ -1,0 +1,78 @@
+dataset:
+  name: "V2V4Real"
+  path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/V2V4Real"
+  global_coordinates: true
+  split: "test" # ["train", "valid", "test"]
+  preprocessed: false
+
+ego_vehicle: "vehicle_2"
+
+vehicles:
+  vehicle_1:
+    type: "broadcasting"
+    parameters:
+      tracking_history: 20 # bbox to save 
+      keep_track: 10
+      prediction_frequency: 10
+      prediction_horizon: 2
+      device: "cuda:1"
+
+    detector:
+      #name: "gt_occ"
+      name: "centerpoint"    # [gt, gt_occ, centerpoint]
+      detections: "detections/test/v2v_test_50/0"
+
+    tracker:
+      #name: "gt"
+      name: "3d"
+
+    predictor:
+      name: "lstm_nll"     
+      checkpoint: "train_predictor/checkpoints/V2V4Real_lstm_nll_10_20_10.pth"
+
+    broadcaster:
+      broadcasting_frequency: 10
+      topic: "pred"
+    
+    listener:
+      topic: "pred"
+
+
+    sensors:
+      - "lidar01"
+
+  vehicle_2:
+    type: "aggregating"
+    parameters:
+      tracking_history: 20 # bbox to save 
+      keep_track: 10
+      prediction_frequency: 10
+      prediction_horizon: 2
+      device: "cuda:1"
+
+    detector:
+      #name: "gt_occ"
+      name: "centerpoint"    # [gt, gt_occ, centerpoint]
+      detections: "detections/test/v2v_test_50/1"
+
+    tracker:
+      #name: "gt"
+      name: "3d"
+
+    predictor:
+      name: "lstm_nll"     
+      checkpoint: "train_predictor/checkpoints/V2V4Real_lstm_nll_10_20_10.pth"
+
+    broadcaster:
+      broadcasting_frequency: 10
+      topic: "pred"
+    
+    listener:
+      topic: "pred" #drop: true
+      delay: #for only stochastic part specify k=0, for no delay remopve this block
+        k: 0.0197
+        mu: 3.135
+        var: 0.033 
+
+    sensors:
+      - "lidar01"

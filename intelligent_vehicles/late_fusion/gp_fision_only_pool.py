@@ -213,21 +213,25 @@ class GPFuser:
     
         for obj_id, (timestamp, ego_pred, pool, type_) in preds_with_pools.items():
             if type_ == 1:
-                # Gorrection to ego trajectory
+                # NEW BEHAVIOR:
+                # Ignore ego prediction completely IF there is something in the pool.
+                # If pool is empty, keep ego_pred as a fallback.
                 if not pool:
                     fused[obj_id] = ego_pred
                     continue
-    
-                # Run ego-based gp    
-                xy_gt=None
+
+                # Optional ground truth for visualization
+                xy_gt = None
                 if obj_id in trajectories:
                     xy_gt = [(p.x, p.y) for p in trajectories[obj_id]["future"][:len(ego_ts)]]
-          
-                fused_pred, fused_cov_matrices, xy_pool, var_pool, xy_ego, var_ego, xy_fused, var_fused = self.ego_based_gp(ego_pred, pool)
-                fused[obj_id] = {"pred": fused_pred, "cov": fused_cov_matrices}
-         
+
+                # Use pool-only GP fusion, just like type 2
+                fused_pred, fused_cov, xy_pool, var_pool, xy_fused, var_fused = self.pool_gp(ego_ts, pool)
+                fused[obj_id] = {"pred": fused_pred, "cov": fused_cov}
+
                 if visualize:
-                    self.plot_predictions(xy_pool, var_pool, xy_ego, var_ego, xy_fused, var_fused, xy_gt)
+                    # Ego is ignored in fusion; we also omit it from the plot here
+                    self.plot_predictions(xy_pool, var_pool, None, None, xy_fused, var_fused, xy_gt)
                 
             elif type_ == 2:  
                 if not pool:
@@ -241,3 +245,4 @@ class GPFuser:
                 
     
         return fused
+

@@ -21,6 +21,10 @@ import numpy as np
 import open3d as o3d
 from visualization.utils import create_box_mesh_and_edges, force_camera_pose
 
+DEFAULT_EGO_LENGTH = 4.5   # meters
+DEFAULT_EGO_WIDTH  = 1.9   # meters
+DEFAULT_EGO_HEIGHT = 1.6 
+
 logger = logging.getLogger(__name__)
 
 def _color_from_occ(occ: float | None) -> tuple[float, float, float]:
@@ -102,7 +106,8 @@ class BBoxVisualizer:
 
     # ........................................................ point cloud
     def update_cloud(self, pc_dict: Dict):
-        xyz = pc_dict["data"][:, :3].astype(np.float32)
+        if "data" in pc_dict: pc_dict = pc_dict["data"]
+        xyz = pc_dict[:, :3].astype(np.float32)
         self.cloud.points = o3d.utility.Vector3dVector(xyz)
         self.cloud.colors = o3d.utility.Vector3dVector(
             np.full_like(xyz, 1.0)
@@ -144,17 +149,19 @@ class BBoxVisualizer:
         if ego_pose is None:
             logger.error("No ego_pose provided")
             return
-        self._add_box(
-            (ego_pose["x"], ego_pose["y"], ego_pose["z"]),
-            ego_pose["length"], ego_pose["width"], ego_pose["height"], ego_pose["yaw"],
-            (0, 1, 0),
-        )
-        # ALWAYS draw heading for ego
-        self._add_heading(
-            (ego_pose["x"], ego_pose["y"], ego_pose["z"]),
-            ego_pose["length"], ego_pose["yaw"],
-            (0, 1, 0),
-        )
+    
+        # Fallback dimensions if they are missing from ego_pose
+        length = ego_pose.get("length", DEFAULT_EGO_LENGTH)
+        width  = ego_pose.get("width",  DEFAULT_EGO_WIDTH)
+        height = ego_pose.get("height", DEFAULT_EGO_HEIGHT)
+    
+        x = ego_pose.get("x")
+        y = ego_pose.get("y")
+        z = ego_pose.get("z", 0.0)
+        yaw = ego_pose.get("yaw", 0.0)
+    
+        self._add_box((x, y, z),length, width, height, yaw, (0, 1, 0))
+        self._add_heading((x, y, z), length, yaw,(0, 1, 0))
 
     def update_bboxes(self, detections: List[Dict], colour=None):
         for d in detections:

@@ -29,6 +29,7 @@ def parse_meta(meta_path):
     meta_path = Path(meta_path)
     with meta_path.open("r") as f:
         lines = [ln.strip() for ln in f]
+        
 
     for line in lines[6:]:
         scen, n = line.rsplit(",", 1)
@@ -72,7 +73,7 @@ def extract_vehicles_sensors_data(data):
     return scenarios_arr, sensors_data_paths
     
 
-def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_root):
+def initialize_vehicle(sensors_data, global_coordinates, veh_id, veh_params, clock_step, channel_root):
     logger.info(f"Initializing vehicle '{veh_id}' of type '{veh_params['type']}'.")
     vehicle_type = veh_params["type"]
     name = veh_id
@@ -95,7 +96,8 @@ def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_roo
             sensors=sensors,
             data=sensors_data,
             clock_step=clock_step,
-            channel_root=channel_root
+            channel_root=channel_root,
+            global_coordinates=global_coordinates
         )
     elif vehicle_type == "broadcasting":
         vehicle_obj = BroadcastingIV(
@@ -108,7 +110,8 @@ def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_roo
             sensors=sensors,
             data=sensors_data,
             clock_step=clock_step,
-            channel_root=channel_root
+            channel_root=channel_root,
+            global_coordinates=global_coordinates
         )
     elif vehicle_type == "hybrid":
         vehicle_obj = HybridIV(
@@ -122,7 +125,8 @@ def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_roo
             sensors=sensors,
             data=sensors_data,
             clock_step=clock_step,
-            channel_root=channel_root
+            channel_root=channel_root,
+            global_coordinates=global_coordinates
         )
     else:
         vehicle_obj = BasicIV(
@@ -133,7 +137,8 @@ def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_roo
             parameters=parameters,
             sensors=sensors,
             data=sensors_data,
-            clock_step=clock_step
+            clock_step=clock_step,
+            global_coordinates=global_coordinates
         )
     logger.info(f"Vehicle '{name}' initialized successfully.")
     return vehicle_obj
@@ -144,12 +149,20 @@ def initialize_vehicles(config, clock_step, channel_root):
     vehicles = config["vehicles"]
     ego_vehicle = config["ego_vehicle"]
     data = config["data"]
+    global_coordinates = data["global_coordinates"] 
     
     scenarios, sensors_data_paths = extract_vehicles_sensors_data(data)
+    n = min(len(sensors_data_paths), len(vehicles))
+    vehicles_upd = {k: vehicles[k] for k in list(vehicles.keys())[:n]}
     ivs = []
     
-    for i, (veh_id, veh_params) in enumerate(vehicles.items()):
-        iv = initialize_vehicle(sensors_data_paths[i], veh_id, veh_params, clock_step, channel_root)
+    for i, (veh_id, veh_params) in enumerate(vehicles_upd.items()):
+        iv = initialize_vehicle(sensors_data_paths[i], 
+                                global_coordinates,
+                                veh_id, 
+                                veh_params, 
+                                clock_step, 
+                                channel_root)
         
         if veh_id == ego_vehicle:
             ego_iv = iv

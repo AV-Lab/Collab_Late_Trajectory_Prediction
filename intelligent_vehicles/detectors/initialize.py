@@ -18,7 +18,7 @@ def initialize_detector(detector_config):
     if detector_config["name"] == "gt_occ":
         return GTOccWrapper()
     if detector_config["name"] == "centerpoint":
-        return CenterPointWrapper(detections_path=detector_config["det_path"])     
+        return CenterPointWrapper(detections_path=detector_config["detections"])     
     else:
         logger.error("You specified unsupported detector class in yaml.")
         exit

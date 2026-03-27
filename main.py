@@ -52,12 +52,14 @@ if __name__ == '__main__':
     channel_root = "ipc:///tmp/prediction"   # use tcp://127.0.0.1:5556/.in .out 
     ensure_proxy_started(channel_root)
     
-    config_path = "configs/DeepAccident/config.yaml"
+    #config_path = "configs/DeepAccident/config.yaml"
+    config_path = "configs/V2V4Real/config.yaml"
+    #config_path = "configs/OPV2V/config.yaml"
     logger.info(f"Loading configuration from: {config_path}")
     configuration = parse_configuration(config_path)
     logger.info("Config parsed successfully")
     
-    simulation_time = 10.0  # total sim time in seconds
+    simulation_time = 200.0  # total sim time in seconds
     dt = 0.02               # step in seconds
     clock_step =  dt / 2
     
@@ -69,6 +71,7 @@ if __name__ == '__main__':
     past_len = ego_vehicle.predictor.observation_length
     
     evaluator = Evaluator(logger=logger)
+    #viz = BBoxVisualizer()
     #viz = PredictorVisualizer()
      
     for scenario, number_of_vehicles in scenarios.items():
@@ -78,25 +81,30 @@ if __name__ == '__main__':
         if not res:
             raise ValueError(f"Scenario '{scenario}' not found in dataset, for ego-vehicle it must be present.")
             
-        logger.info(f"For {ego_vehicle.name} scnerio {scenario} is loaded")
-        N = min(len(vehicles), number_of_vehicles)
+        logger.info(f"For ego_vehicle {ego_vehicle.name} scnerio {scenario} is loaded")
+        N = min(len(vehicles), number_of_vehicles-1)
+        logger.info(f"Total number of vehicles apart from ego: {N}")
         for iv in vehicles[:N]:
             iv.reset()
             iv.loader.preload_data(scenario) 
             logger.info(f"For {iv.name} scnerio {scenario} is loaded")
         
         t_global = 0.0
-        evaluator.begin_scenario()  # NEW
+        evaluator.begin_scenario()
         
         # run global_clock (sequential, ego advances time)
         while t_global < simulation_time:
             # step all other vehicles at current sim-time
             for iv in vehicles[:N]:
-                iv.run(t_global)
+                iv.run(t_global, scenario)
             # step ego at current sim-time
             response = ego_vehicle.run(t_global, scenario)
             if response is not None:
-                predictions, tracklets, trajectories, point_cloud, ego_pose, calibration = response
+                
+                #detections, ego_state, point_cloud = response
+                #viz.visualize(point_cloud, detections, ego_state)
+                
+                predictions, tracklets, trajectories, point_cloud, ego_pose = response
                 forecasts, metrics = compute_frame_based_performance(predictions, 
                                                                      tracklets, 
                                                                      trajectories, 
@@ -110,7 +118,6 @@ if __name__ == '__main__':
                 #viz.visualize_forecasts(
                 #    point_cloud=point_cloud,
                 #    ego_pose=ego_pose,
-                #    calib=calibration,
                 #    forecasts=forecasts,
                 #    show_past=True,
                 #    show_future=True,
@@ -119,10 +126,11 @@ if __name__ == '__main__':
                 #   sigma_scale=1.0
                 #)
 
-            # advance sim-time once per loop (no threads)
+            # advance sim-time 
             t_global += dt
             
         evaluator.end_scenario(scenario)  
     evaluator.log_overall(len(scenarios))  
+    #evaluator.plot_hist(model_name="LSTM-23")
     
     #visualizer.close()

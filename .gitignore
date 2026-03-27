@@ -1,7 +1,14 @@
-data/detections/
-temp/
-# Python cache files
+__pycache__/
 **/__pycache__/
-*temp*
-checkpoints/
 
+*.txt
+*.log
+*.png
+*.csv
+
+plots/
+detections/
+
+# Training artifacts
+train_predictor/checkpoints/
+train_predictor/generators/data/

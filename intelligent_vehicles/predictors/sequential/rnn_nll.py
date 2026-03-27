@@ -108,7 +108,8 @@ class RNNPredictorNLL:
             self.model_trained = True
             for k in self.params:
                 setattr(self, k, ckpt[k])
-            # optional: restore adv params if present
+            self.trained_fps = int(self.trained_fps)
+            self.observation_length = int(self.observation_length)
             self.epsilon = ckpt.get("epsilon", self.epsilon)
             self.adv_weight = ckpt.get("adv_weight", self.adv_weight)
         else:
@@ -322,7 +323,6 @@ class RNNPredictorNLL:
     
         self.model.eval()
         vel_batch, last_pos_batch = [], []
-        H = int(prediction_horizon * self.trained_fps)   # seconds → steps
     
         # build velocity histories
         for tr in trajs:
@@ -342,32 +342,42 @@ class RNNPredictorNLL:
         vel_batch = torch.stack(vel_batch)                                     # [B, T-1, input_size]
         enc_in = vel_batch[:, :, :self.input_size]                             # velocities only
     
-        predictions, covariances = [], []
         with torch.no_grad():
             # model outputs mean velocities and log-variance
-            mu_v, lv_v = self.model(enc_in, H)                                 # [B, H, out_dim] each
-    
+            mu_v, lv_v = self.model(enc_in, prediction_horizon)                     # [B, H, out_dim]
+        
             # map log-variance -> variance as in training: exp(clamp) + floor
             lv_v = torch.clamp(lv_v, self.logvar_min, self.logvar_max)
-            var_v = torch.exp(lv_v).clamp_min(self.var_floor)                        # [B, H, out_dim]
-    
-            # integrate to positions (mean) and propagate diagonal variance
-            for i in range(len(trajs)):
-                last_pos = last_pos_batch[i]                                    # [pos_dim]
-                mu_v_i  = mu_v[i:i+1, :, :self.pos_size]                        # [1, H, pos_dim]
-                var_v_i = var_v[i:i+1, :, :self.pos_size]                       # [1, H, pos_dim]
-    
-                # mean positions via cumulative sum of velocities
-                pos_mean = self._vel_to_pos(last_pos, mu_v_i, self.pos_size)[0] # [H, pos_dim]
-    
-                # diagonal covariance: Var(sum v) = sum Var(v) (indep increments)
-                pos_var  = torch.cumsum(var_v_i, dim=1)[0]                      # [H, pos_dim]
-                pos_cov  = torch.diag_embed(pos_var)                            # [H, pos_dim, pos_dim]
-    
-                predictions.append(pos_mean.cpu().numpy())
-                covariances.append(pos_cov.cpu().numpy())
-    
+            var_v = torch.exp(lv_v).clamp_min(self.var_floor)      # [B, H, out_dim]
+        
+            B = mu_v.size(0)
+        
+            pos_means = []
+            for i in range(B):
+                last_pos = last_pos_batch[i]                       # [pos_dim]
+                mu_v_i  = mu_v[i:i+1, :, :self.pos_size]           # [1, H, pos_dim]
+                pos_mean_i = self._vel_to_pos(last_pos, mu_v_i, self.pos_size)[0]  # [H, pos_dim]
+                pos_means.append(pos_mean_i)
+            pos_means = torch.stack(pos_means, dim=0)              # [B, H, pos_dim]
+        
+            # ---- compute ALL diagonal covariances -> [B, H, pos_dim, pos_dim] ----
+            pos_covs = []
+            for i in range(B):
+                var_v_i = var_v[i:i+1, :, :self.pos_size]          # [1, H, pos_dim]
+                pos_var = torch.cumsum(var_v_i, dim=1)[0]          # [H, pos_dim]
+                pos_cov_i = torch.diag_embed(pos_var)              # [H, pos_dim, pos_dim]
+                pos_covs.append(pos_cov_i)
+            pos_covs = torch.stack(pos_covs, dim=0)                # [B, H, pos_dim, pos_dim]
+        
+        pred_np = pos_means.cpu().numpy()   # [B, H, pos_dim]
+        cov_np  = pos_covs.cpu().numpy()    # [B, H, pos_dim, pos_dim]
+        
+        # convert to lists-of-arrays like before
+        predictions  = [pred_np[i] for i in range(B)]
+        covariances  = [cov_np[i] for i in range(B)]
+        
         return predictions, covariances
+
 
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~  checkpoint  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #

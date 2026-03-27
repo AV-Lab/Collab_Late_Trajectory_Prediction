@@ -9,6 +9,7 @@ Created on Mon Jul  8 14:11:22 2024
 import torch
 import os
 import time
+import time
 import numpy as np
 import logging
 logger = logging.getLogger(__name__)
@@ -33,8 +34,8 @@ class BasicIV:
     """
     
 
-    def _init_dataloader(self, data_file, sensors, fps):
-        return TrajDataloader(data_file, sensors, fps)
+    def _init_dataloader(self, data_file, sensors, fps, global_coordinates):
+        return TrajDataloader(data_file, sensors, fps, global_coordinates)
 
     def _init_detector(self, detector_config):
         print(f"Initializing detector with config: {detector_config}")
@@ -58,7 +59,6 @@ class BasicIV:
         else:
             detections = self.detector.detect(frame_data)
             
-        detections = self.ego_motion_compensation(detections, calibration)
         return detections 
 
     def run_tracker(self, detections):
@@ -68,17 +68,28 @@ class BasicIV:
     
 
     def run_predictor(self, tracklets, sim_time_s, trajectories):
-        past_trajs = self.predictor.format_input(tracklets)
-        pred_ts_ms = int(round(sim_time_s * 1000.0))  # use coordinated simulation time
+        # measure start time
+  
+        past_trajs = self.predictor.format_input(tracklets)       
+        pred_ts_ms = int(round(sim_time_s * 1000.0))  # coordinated sim time    
         mean_trajs, cov_trajs = self.predictor.predict(past_trajs)
         self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
-        predictions = self.object_graph.extract_predictions()        
-        print(f"[{self.name}] prediction sim-timestamp (ms): {pred_ts_ms}")
-
+        predictions = self.object_graph.extract_predictions()  
         return predictions
-
+    
+    def lidar_pc_to_world_coord(self, point_cloud, calibration):
+        T_lidar_world = np.array(calibration["ego_to_world"]) @ np.array(calibration["lidar_to_ego"])    
+        xyz_h = np.hstack([point_cloud, np.ones((point_cloud.shape[0], 1), dtype=np.float32)])
+        point_cloud = (T_lidar_world @ xyz_h.T).T[:, :3]
+        return point_cloud
+    
+    def reset_time_steps(self):
+        self.starting_time = 0.0  
+        self.next_observation_time = self.starting_time  
+        self.next_prediction_time = self.starting_time + 1.0  
     
     def reset(self):
+        self.reset_time_steps()
         self.tracker.reset()
         self.object_graph.reset()
     
@@ -87,7 +98,7 @@ class BasicIV:
         Convert LiDAR-frame boxes to world frame (position + yaw).
         """
     
-        T_lw = calibration["ego_to_world"] @ calibration["lidar_to_ego"]
+        T_lw = np.array(calibration["ego_to_world"]) @ np.array(calibration["lidar_to_ego"])
         R_lw = T_lw[:3, :3]
         ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   
 
@@ -114,7 +125,8 @@ class BasicIV:
                  parameters, 
                  sensors, 
                  data,
-                 clock_step):
+                 clock_step, 
+                 global_coordinates):
     
         self.name = name
         self.cur_location = None
@@ -123,9 +135,8 @@ class BasicIV:
         self.load_gt_detections = False
 
         # timing/init
-        self.starting_time = 0.0  # can include delays if needed
-        self.next_observation_time = self.starting_time  
-        self.next_prediction_time = self.starting_time + 1.0  # delay by 1 second to make sure we have track history
+        self.reset_time_steps()
+        self.global_coordinates = global_coordinates
 
         # params
         self.tracking_history = parameters["tracking_history"]
@@ -153,7 +164,7 @@ class BasicIV:
         self._init_tracker(tracker_config)
         self._init_object_graph()
         
-        self.loader = self._init_dataloader(data, sensors, self.fps)
+        self.loader = self._init_dataloader(data, sensors, self.fps, self.global_coordinates)
     
     
     def run(self, t, scenario=None):
@@ -165,35 +176,34 @@ class BasicIV:
             
             if frame_data is None:
                 logger.info(f"Vehicle {self.name} left the scene.")
-                self.next_observation_time = self.starting_time
-                self.next_prediction_time = self.starting_time + 1.0
                 return None
             
             # if we received observation 
             ego_state = frame_data["ego_state"]
             calibration = frame_data["calibration"]
-            point_cloud = frame_data["lidar"]
             trajectories = frame_data["trajectories"]
-            
+            point_cloud = frame_data["lidar"]
+            point_cloud = self.lidar_pc_to_world_coord(point_cloud, calibration)
+                 
             # update location
             if ego_state is not None:
-                self.cur_location = [{"x": ego_state["x"], 
-                                      "y": ego_state["y"], 
-                                      "z": ego_state["z"], 
-                                      "yaw": ego_state["yaw"]}]
-                self.cur_location = self.ego_motion_compensation(self.cur_location, calibration)[0] 
+                self.cur_location = ego_state
+                if not self.global_coordinates:
+                    self.cur_location = self.ego_motion_compensation([self.cur_location], calibration)[0] 
 
-            # Run detection
+            # Run detection            
             detections = self.run_detector(t, frame_data, calibration, scenario)
-        
+            if not self.global_coordinates or not self.detector.global_coordinates:
+                detections = self.ego_motion_compensation(detections, calibration)
+                
             # Update the tracker 
             tracklets = self.run_tracker(detections)
 
-            # Due-or-late gate for prediction
-            
+            # Due-or-late gate for prediction            
             if (t + self.delta) >= self.next_prediction_time:
-                predictions = self.run_predictor(tracklets, t, trajectories) 
-                response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
+                if len(tracklets) > 0:
+                    predictions = self.run_predictor(tracklets, t, trajectories) 
+                    response = (predictions, tracklets, trajectories, point_cloud, ego_state)
                 self.next_prediction_time += self.pred_period  
             
         return response

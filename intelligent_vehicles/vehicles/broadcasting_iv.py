@@ -25,7 +25,18 @@ class BroadcastingIV(BasicIV):
         collaboration_graph (object, optional): Collaboration graph object.
     """
     
-    def __init__(self, name, detector_config, tracker_config, predictor_config, broadcaster_config, parameters, sensors, data, clock_step, channel_root):
+    def __init__(self, 
+                 name, 
+                 detector_config, 
+                 tracker_config, 
+                 predictor_config, 
+                 broadcaster_config, 
+                 parameters, 
+                 sensors, 
+                 data, 
+                 clock_step, 
+                 channel_root, 
+                 global_coordinates):
         
         super().__init__(name,
                          detector_config,
@@ -34,7 +45,8 @@ class BroadcastingIV(BasicIV):
                          parameters,
                          sensors,
                          data,
-                         clock_step)
+                         clock_step,
+                         global_coordinates)
         
         self.broadcasting_frequency = broadcaster_config["broadcasting_frequency"]
         self._broadcaster = Broadcaster(root=channel_root, topic=broadcaster_config["topic"])
@@ -57,6 +69,7 @@ class BroadcastingIV(BasicIV):
                                       "z": float(ego_state.get("z", 0.0)),
                                       "yaw": float(ego_state.get("yaw", 0.0))}
             
+        
         return packet
             
             
@@ -90,6 +103,8 @@ class BroadcastingIV(BasicIV):
            
             # Run detection
             detections = self.run_detector(t, frame_data, calibration, scenario)
+            if not self.global_coordinates or not self.detector.global_coordinates:
+                detections = self.ego_motion_compensation(detections, calibration)
         
             # Update the tracker 
             tracklets = self.run_tracker(detections)
@@ -97,8 +112,9 @@ class BroadcastingIV(BasicIV):
             
             # Prediction gate (due-or-late)
             if (t + self.delta) >= self.next_prediction_time: 
-                predictions = self.run_predictor(tracklets, t, trajectories)  # pass sim-time 't'
-                response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
+                if len(tracklets) > 0:
+                    predictions = self.run_predictor(tracklets, t, trajectories)  # pass sim-time 't'
+                    response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
                 self.next_prediction_time += self.pred_period  
             
         # Broadcasting gate (due-or-late)
@@ -108,5 +124,6 @@ class BroadcastingIV(BasicIV):
             message_size_bytes = self._broadcaster.send(packet)
             self.next_broadcasting_time += self.bcast_period  
             logger.info(f"[{self.name}] send broadcast with message size {message_size_bytes}")
-                
+            with open(f"{self.name}_message_size.txt", 'a') as file: 
+                file.write("{}\n".format(message_size_bytes))
         return response
