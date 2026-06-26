@@ -462,29 +462,36 @@ def preprocess_dataset(dataset_root: str, prefix: str, visualize: bool = False) 
 
         print(f"[OK] Scenario processed: {scenario_name}")
 
-    # meta summary per split
+    # meta summary per split (for quick sanity checking)
     scene_vehicle_counts = {
         scene_name: len(agent_dict) for scene_name, agent_dict in scenarios.items()
     }
     max_vehicles = max(scene_vehicle_counts.values()) if scene_vehicle_counts else 0
 
+    # duration per scenario based on sensor observation length
+    # duration = number of frames * STEP
+    scene_durations = {}
+    for scene_name, agent_dict in scenarios.items():
+        max_num_frames = 0
+
+        for _, frame_dict in agent_dict.items():
+            num_frames = len(frame_dict)
+            max_num_frames = max(max_num_frames, num_frames)
+
+        scene_durations[scene_name] = max_num_frames * Constants.STEP
+
     meta_path = split_dir / "meta.txt"
     with open(meta_path, "w") as mf:
-        mf.write("dataset=V2V4Real\n")
+        mf.write("dataset=OPV2V\n")
         mf.write(f"split={prefix}\n")
         mf.write(f"fps={Constants.FPS}\n")
+        mf.write(f"global=True\n")
         mf.write(f"max_vehicles={max_vehicles}\n")
-        mf.write("\nscenario_name,num_agents\n")
-        for scen_name, nveh in sorted(scene_vehicle_counts.items()):
-            mf.write(f"{scen_name},{nveh}\n")
+        mf.write("\nscenario_name,num_vehicles,duration\n")
 
-    data = {"scenarios": scenarios}
-    out_path = split_dir / f"{prefix}_data.pkl"
-    with open(out_path, "wb") as f:
-        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"[SAVE] {out_path}")
-    print(f"[META] {meta_path}")
-    return out_path
+        for scen_name, nveh in sorted(scene_vehicle_counts.items()):
+            duration = scene_durations.get(scen_name, 0.0)
+            mf.write(f"{scen_name},{nveh},{duration:.2f}\n")
 
 
 # ───────────────────────────────────────── CLI ───────────────────────────────────────── #

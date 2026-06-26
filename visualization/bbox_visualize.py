@@ -77,8 +77,8 @@ def _create_box_mesh_and_edges_transparent(
 class BBoxVisualizer:
     def __init__(
         self,
-        camera_height: float = 40.0,
-        zoom_level:   float = 0.15,
+        camera_height: float = 20.0,
+        zoom_level:   float = 0.1,
         open_top:     bool  = True,
         face_alpha:   float = 0.35,
         agent_heading: bool = False,          # ← NEW flag

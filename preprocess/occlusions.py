@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple, Optional
 import math
 import numpy as np
 
-from math_helper import (
+from .math_helper import (
     box_corners_xy, rect_angular_span, ray_rect_distance
 )
 

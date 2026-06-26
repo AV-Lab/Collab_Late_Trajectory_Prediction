@@ -32,6 +32,7 @@ import copy
 import math
 from typing import List, Tuple, Dict, Optional
 import numpy as np
+import argparse
 
 
 class Constants:
@@ -50,6 +51,7 @@ class Constants:
     YAW_IN_DEGREES = False
     MIN_POINTS_IN_BOX = 10
     KEEP_RADIUS_M = 50.0
+    STEP = 1.0 / FPS
 
 
 def _load_lidar_xyz(npz_path: str) -> Optional[np.ndarray]:
@@ -430,11 +432,18 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
             print(f"{scenario_name} :: {agent} processed "
                   f"(kept {kept_total}, dropped {dropped_total})")
 
-    # ---- NEW: meta.txt (no meta in pickle) ----
-    scen_vehicle_counts = {
-        scen_name: len(agents_dict) for scen_name, agents_dict in scenarios.items()
-    }
-    max_vehicles = max(scen_vehicle_counts.values()) if scen_vehicle_counts else 0
+    scene_vehicle_counts = {scene_name: len(agents_dict) for scene_name, agents_dict in scenarios.items()}
+    max_vehicles = max(scene_vehicle_counts.values()) if scene_vehicle_counts else 0
+    
+    scene_durations = {}
+    for scene_name, agent_dict in scenarios.items():
+        max_num_frames = 0
+
+        for _, frame_dict in agent_dict.items():
+            num_frames = len(frame_dict)
+            max_num_frames = max(max_num_frames, num_frames)
+
+        scene_durations[scene_name] = max_num_frames * Constants.STEP
 
     meta_path = os.path.join(dataset_dir, "meta.txt")
     with open(meta_path, "w") as mf:
@@ -443,9 +452,11 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
         mf.write(f"fps={Constants.FPS}\n")
         mf.write(f"gloabl=False\n")
         mf.write(f"max_vehicles={max_vehicles}\n")
-        mf.write("\nscenario_name,num_vehicles\n")
-        for scen_name, nveh in sorted(scen_vehicle_counts.items()):
-            mf.write(f"{scen_name},{nveh}\n")
+        mf.write("\nscenario_name,num_vehicles,duration\n")
+        
+        for scene_name, nveh in sorted(scene_vehicle_counts.items()):
+            duration = scene_durations.get(scene_name, 0.0)
+            mf.write(f"{scene_name},{nveh},{duration:.2f}\n")
 
     data = {'scenarios': scenarios}
     output_pickle_path = os.path.join(dataset_dir, f"{prefix}_data.pkl")
@@ -456,7 +467,13 @@ def preprocess_dataset(dataset_dir: str, prefix: str = "train"):
 
 
 if __name__ == '__main__':
-    data_folder = '/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/DeepAccident'
-    print(f"Preprocessing datasets at {data_folder}")
-    preprocess_dataset(data_folder, prefix='train')
-    preprocess_dataset(data_folder, prefix='valid')
+    parser = argparse.ArgumentParser(
+        description="DeepAccident → unified pickle with optional occlusion visualization"
+    )
+    parser.add_argument("dataset_root", type=str, help="Path containing train/valid/test")
+    parser.add_argument("--splits", nargs="+", default=["train", "valid"], help="Splits to process")
+    args = parser.parse_args()
+
+    root = args.dataset_root
+    for split in args.splits:
+        preprocess_dataset(root, prefix=split)

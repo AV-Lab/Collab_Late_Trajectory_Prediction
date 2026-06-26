@@ -52,8 +52,8 @@ if __name__ == '__main__':
     channel_root = "ipc:///tmp/prediction"   # use tcp://127.0.0.1:5556/.in .out 
     ensure_proxy_started(channel_root)
     
-    #config_path = "configs/DeepAccident/config.yaml"
-    config_path = "configs/V2V4Real/config.yaml"
+    config_path = "configs/DeepAccident/config.yaml"
+    #config_path = "configs/V2V4Real/config.yaml"
     #config_path = "configs/OPV2V/config.yaml"
     logger.info(f"Loading configuration from: {config_path}")
     configuration = parse_configuration(config_path)
@@ -71,10 +71,9 @@ if __name__ == '__main__':
     past_len = ego_vehicle.predictor.observation_length
     
     evaluator = Evaluator(logger=logger)
-    #viz = BBoxVisualizer()
     #viz = PredictorVisualizer()
      
-    for scenario, number_of_vehicles in scenarios.items():
+    for scenario, (number_of_vehicles, sim_time) in scenarios.items():
         # first preload all data for scenario
         ego_vehicle.reset()
         res = ego_vehicle.loader.preload_data(scenario)
@@ -93,16 +92,13 @@ if __name__ == '__main__':
         evaluator.begin_scenario()
         
         # run global_clock (sequential, ego advances time)
-        while t_global < simulation_time:
+        while t_global < sim_time:
             # step all other vehicles at current sim-time
             for iv in vehicles[:N]:
                 iv.run(t_global, scenario)
             # step ego at current sim-time
             response = ego_vehicle.run(t_global, scenario)
             if response is not None:
-                
-                #detections, ego_state, point_cloud = response
-                #viz.visualize(point_cloud, detections, ego_state)
                 
                 predictions, tracklets, trajectories, point_cloud, ego_pose = response
                 forecasts, metrics = compute_frame_based_performance(predictions, 
@@ -123,7 +119,7 @@ if __name__ == '__main__':
                 #    show_future=True,
                 #    show_missing=True,      # include missed
                 #    show_false=True,        # include false positives
-                #   sigma_scale=1.0
+                #    sigma_scale=1.0
                 #)
 
             # advance sim-time 

@@ -4,7 +4,7 @@ import logging
 
 SUPPORTED_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
 SUPPORTED_DETECTORS = {"gt", "gt_occ", "centerpoint"}
-SUPPORTED_PREDICTORS = {"lstm_nll", "transformer_nll"}
+SUPPORTED_PREDICTORS = {"lstm", "lstm_bivariate_nll", "lstm_nll", "transformer_nll"}
 SUPPORTED_TRACKERS = {"gt", "3d"}
 SPLITS = {"train", "valid", "test"}
 

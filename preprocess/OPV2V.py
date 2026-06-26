@@ -21,9 +21,8 @@ import numpy as np
 import yaml
 import open3d as o3d
 
-from math_helper import pose_to_T, inv_T, cosd, sind   
-from occlusions import compute_l1_occlusion_for_frame
-from visualize import VisOcclusionScores
+from .math_helper import pose_to_T, inv_T, cosd, sind   
+from .occlusions import compute_l1_occlusion_for_frame
 
 
 class Constants:
@@ -39,7 +38,7 @@ class Constants:
     OCCLUSION_VERTICAL_CHECK = True
     YAW_IN_DEGREES          = False  # we convert to radians in preprocessing
 
-    KEEP_RADIUS_M = 100.0
+    KEEP_RADIUS_M = 50.0
 
 
 # ───────────────────────────────────────────────────────── helpers ───────────────────────────────────────────────────────── #
@@ -214,7 +213,7 @@ def _lidar_xyz_from_pcd(pcd_path: Path) -> Optional[np.ndarray]:
 
 # ───────────────────────────────────────────────────────── main preprocessing ───────────────────────────────────────────────────────── #
 
-def preprocess_dataset(dataset_root: str, prefix: str, visualize: bool = False) -> Path:
+def preprocess_dataset(dataset_root: str, prefix: str) -> Path:
     """
     Process a single split (train/valid/test) into <split>_data.pkl.
 
@@ -227,19 +226,14 @@ def preprocess_dataset(dataset_root: str, prefix: str, visualize: bool = False) 
     split_dir = Path(dataset_root).expanduser().resolve() / prefix
     if not split_dir.exists():
         print(f"[Info] Split '{prefix}' not found at {split_dir}, skipping.")
-        return split_dir / f"{prefix}_data.pkl"
 
     scenarios: Dict[str, Dict[str, Dict[float, dict]]] = {}
     agent_name_set = set()
 
-    viz_dir = split_dir / "viz"
-    if visualize and not viz_dir.exists():
-        viz_dir.mkdir(parents=True, exist_ok=True)
-
-    for scen_path in sorted(p for p in split_dir.iterdir() if p.is_dir()):
-        scenario_name = scen_path.name
+    for scene_path in sorted(p for p in split_dir.iterdir() if p.is_dir()):
+        scenario_name = scene_path.name
         scenarios.setdefault(scenario_name, {})
-        veh_dirs = sorted([p for p in scen_path.iterdir() if p.is_dir()])
+        veh_dirs = sorted([p for p in scene_path.iterdir() if p.is_dir()])
 
         # Align timestamps across vehicles: find global min numeric frame index
         all_yaml = [y for vdir in veh_dirs for y in vdir.glob("*.yaml")]
@@ -281,6 +275,7 @@ def preprocess_dataset(dataset_root: str, prefix: str, visualize: bool = False) 
                     img = vdir / f"{str(frame_idx).zfill(pad_len)}_{cam}.png"
                     images[cam] = str(img)
                 lidar_path = vdir / f"{str(frame_idx).zfill(pad_len)}.pcd"
+            
 
                 # labels + ego
                 labels_full = _build_labels(frame_yaml)   # world frame, yaw in rad
@@ -315,41 +310,42 @@ def preprocess_dataset(dataset_root: str, prefix: str, visualize: bool = False) 
                     "calibration": calibration,
                 }
 
-                # 2D BEV occlusion debug PNGs (optional)
-                if visualize:
-                    out_png = viz_dir / f"{scenario_name}_{agent}_{str(frame_idx).zfill(pad_len)}.png"
-                    title = f"{prefix}/{scenario_name} | {agent} | frame {frame_idx}"
-                    VisOcclusionScores().render(
-                        debug, occ_map, title=title, out_path=str(out_png)
-                    )
-
-
 
         print(f"[OK] Scenario processed: {prefix}/{scenario_name}")
 
-    # meta summary per split (for quick sanity checking)
-    scene_vehicle_counts = {
-        scene_name: len(agent_dict) for scene_name, agent_dict in scenarios.items()
-    }
+    scene_vehicle_counts = {scene_name: len(agent_dict) for scene_name, agent_dict in scenarios.items()}
     max_vehicles = max(scene_vehicle_counts.values()) if scene_vehicle_counts else 0
+
+    # duration per scenario based on sensor observation length, duration = number of frames * STEP
+    scene_durations = {}
+    for scene_name, agent_dict in scenarios.items():
+        max_num_frames = 0
+
+        for _, frame_dict in agent_dict.items():
+            num_frames = len(frame_dict)
+            max_num_frames = max(max_num_frames, num_frames)
+
+        scene_durations[scene_name] = max_num_frames * Constants.STEP
 
     meta_path = split_dir / "meta.txt"
     with open(meta_path, "w") as mf:
         mf.write("dataset=OPV2V\n")
         mf.write(f"split={prefix}\n")
         mf.write(f"fps={Constants.FPS}\n")
+        mf.write(f"global=True\n")
         mf.write(f"max_vehicles={max_vehicles}\n")
-        mf.write("\nscenario_name,num_vehicles\n")
-        for scen_name, nveh in sorted(scene_vehicle_counts.items()):
-            mf.write(f"{scen_name},{nveh}\n")
+        mf.write("\nscenario_name,num_vehicles,duration\n")
 
+        for scene_name, nveh in sorted(scene_vehicle_counts.items()):
+            duration = scene_durations.get(scene_name, 0.0)
+            mf.write(f"{scene_name},{nveh},{duration:.2f}\n")
+            
     data = {"scenarios": scenarios}
-    out_path = split_dir / f"{prefix}_data_.pkl"
-    with open(out_path, "wb") as f:
+    output_pickle_path = split_dir / f"{prefix}_data.pkl"
+    with open(output_pickle_path, 'wb') as f:
         pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"[SAVE] {out_path}")
+    print(f"Saved dataset to {output_pickle_path}")
     print(f"[META] {meta_path}")
-    return out_path
 
 
 # ───────────────────────────────────────────────────────── CLI ───────────────────────────────────────────────────────── #
@@ -360,9 +356,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("dataset_root", type=str, help="Path containing train/valid/test")
     parser.add_argument("--splits", nargs="+", default=["train", "valid", "test"], help="Splits to process")
-    parser.add_argument("--visualize", action="store_true", help="Visualize scenarios.")
     args = parser.parse_args()
 
     root = args.dataset_root
     for split in args.splits:
-        preprocess_dataset(root, prefix=split, visualize=args.visualize)
+        preprocess_dataset(root, prefix=split)

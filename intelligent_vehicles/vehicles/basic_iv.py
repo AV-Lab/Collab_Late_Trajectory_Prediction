@@ -72,7 +72,7 @@ class BasicIV:
   
         past_trajs = self.predictor.format_input(tracklets)       
         pred_ts_ms = int(round(sim_time_s * 1000.0))  # coordinated sim time    
-        mean_trajs, cov_trajs = self.predictor.predict(past_trajs)
+        mean_trajs, cov_trajs = self.predictor.predict(past_trajs, trajectories)
         self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
         predictions = self.object_graph.extract_predictions()  
         return predictions

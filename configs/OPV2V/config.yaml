@@ -1,9 +1,9 @@
 dataset:
   name: "OPV2V"
-  path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/OPV2V"
+  path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/data/OPV2V"
   global_coordinates: true
   split: "test" # ["train", "valid", "test"]
-  preprocessed: true
+  preprocessed: false
 
 ego_vehicle: "vehicle_2"
 
@@ -25,9 +25,11 @@ vehicles:
       name: "gt"
 
     predictor:
-      name: "transformer_nll"     
-      checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
-      #name: "lstm_nll"
+      #name: "transformer_nll"     
+      #checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
+      name: "lstm"
+      checkpoint: "train_predictor/checkpoints/OPV2V_lstm_10_20_10.pth"
+      #name: "lstm_nll"     
       #checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
 
     broadcaster:
@@ -41,7 +43,7 @@ vehicles:
       - "lidar01"
 
   vehicle_2:
-    type: "aggregating"  # [basic, aggregating, broadcasting, hybrid]
+    type: "basic"  # [basic, aggregating, broadcasting, hybrid]
     parameters:
       tracking_history: 20 # bbox to save 
       keep_track: 10
@@ -54,14 +56,17 @@ vehicles:
       #detections: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
     
     tracker:
-      name: "gt" #[gt, gt_noise, ab3dmot]
+      name: "gt" #[gt, ab3dmot]
       # No mode or checkpoint needed, as it's algorithmic
     
     predictor:
       #name: "transformer_nll"     
       #checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_20_30_10.pth"
-      name: "lstm_nll"   # [lstm, lstm_cat, transformer, transformer_cat]
-      checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
+      name: "lstm"   # [lstm, lstm_cat, transformer, transformer_cat]
+      checkpoint: "train_predictor/checkpoints/OPV2V_lstm_10_20_10.pth"
+      #name: "lstm_nll"     
+      #checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
+
     
     broadcaster:
       broadcasting_frequency: 10
@@ -87,13 +92,15 @@ vehicles:
       #detections: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
     
     tracker:
-      name: "gt" #[gt, gt_noise, ab3dmot]
+      name: "gt" #[gt, ab3dmot]
       # No mode or checkpoint needed, as it's algorithmic
     
     predictor:
-      name: "transformer_nll"     
-      checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
-      #name: "lstm_nll"   # [lstm, lstm_cat, transformer, transformer_cat]
+      #name: "transformer_nll"     
+      #checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
+      name: "lstm"   # [lstm, lstm_cat, transformer, transformer_cat]
+      checkpoint: "train_predictor/checkpoints/OPV2V_lstm_10_20_10.pth"
+      #name: "lstm_nll"     
       #checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
     
     broadcaster:
@@ -120,13 +127,15 @@ vehicles:
       #detections: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
     
     tracker:
-      name: "gt" #[gt, gt_noise, ab3dmot]
+      name: "gt" #[gt, ab3dmot]
       # No mode or checkpoint needed, as it's algorithmic
     
     predictor:
-      name: "transformer_nll"     
-      checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
-      #name: "lstm_nll"   # [lstm, lstm_cat, transformer, transformer_cat]
+      #name: "transformer_nll"     
+      #checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
+      name: "lstm"   # [lstm, lstm_cat, transformer, transformer_cat]
+      checkpoint: "train_predictor/checkpoints/OPV2V_lstm_10_20_10.pth"
+      #name: "lstm_nll"     
       #checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
     
     broadcaster:
@@ -139,101 +148,4 @@ vehicles:
     sensors:
       - "lidar01"
       
-  vehicle_5:
-    type: "broadcasting"  # [basic, aggregating, broadcasting, hybrid]
-    parameters:
-      tracking_history: 20 # bbox to save 
-      keep_track: 10
-      prediction_frequency: 10 
-      prediction_horizon: 2
-      device: "cuda:1" #options [cuda, cpu, cuda:1]
-    
-    detector:
-      name: "gt_occ"    # [gt, centerpoint] 
-      #detections: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
-    
-    tracker:
-      name: "gt" #[gt, gt_noise, ab3dmot]
-      # No mode or checkpoint needed, as it's algorithmic
-    
-    predictor:
-      name: "transformer_nll"     
-      checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
-      #name: "lstm_nll"   # [lstm, lstm_cat, transformer, transformer_cat]
-      #checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
-    
-    broadcaster:
-      broadcasting_frequency: 10
-      topic: "pred"
       
-    listener:
-      topic: "pred"
-    
-    sensors:
-      - "lidar01"
-      
-  vehicle_6:
-    type: "broadcasting"  # [basic, aggregating, broadcasting, hybrid]
-    parameters:
-      tracking_history: 20 # bbox to save 
-      keep_track: 10
-      prediction_frequency: 10 
-      prediction_horizon: 2
-      device: "cuda:1" #options [cuda, cpu, cuda:1]
-    
-    detector:
-      name: "gt_occ"    # [gt, centerpoint] 
-      #detections: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
-    
-    tracker:
-      name: "gt" #[gt, gt_noise, ab3dmot]
-      # No mode or checkpoint needed, as it's algorithmic
-    
-    predictor:
-      name: "transformer_nll"     
-      checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
-      #name: "lstm_nll"   # [lstm, lstm_cat, transformer, transformer_cat]
-      #checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
-    
-    broadcaster:
-      broadcasting_frequency: 10
-      topic: "pred"
-      
-    listener:
-      topic: "pred"
-    
-    sensors:
-      - "lidar01"
-      
-  vehicle_7:
-    type: "broadcasting"  # [basic, aggregating, broadcasting, hybrid]
-    parameters:
-      tracking_history: 20 # bbox to save 
-      keep_track: 10
-      prediction_frequency: 10 
-      prediction_horizon: 2
-      device: "cuda:1" #options [cuda, cpu, cuda:1]
-    
-    detector:
-      name: "gt_occ"    # [gt, centerpoint] 
-      #detections: "data/detections/DeepAccident/noisy_observations/val/ego_vehicle"
-    
-    tracker:
-      name: "gt" #[gt, gt_noise, ab3dmot]
-      # No mode or checkpoint needed, as it's algorithmic
-    
-    predictor:
-      name: "transformer_nll"     
-      checkpoint: "train_predictor/checkpoints/OPV2V_transformer_nll_10_20_10.pth"
-      #name: "lstm_nll"   # [lstm, lstm_cat, transformer, transformer_cat]
-      #checkpoint: "train_predictor/checkpoints/OPV2V_lstm_nll_10_20_10.pth"
-    
-    broadcaster:
-      broadcasting_frequency: 10
-      topic: "pred"
-      
-    listener:
-      topic: "pred"
-    
-    sensors:
-      - "lidar01"

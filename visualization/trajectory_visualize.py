@@ -26,7 +26,7 @@ class PredictorVisualizer(BBoxVisualizer):
     GREEN  = (0.10, 0.85, 0.25)   # ego
     ELLIPSE_TINT = 0.60           # lighten factor for covariance ellipses
 
-    def __init__(self, camera_height: float = 40.0, zoom_level: float = 0.2):
+    def __init__(self, camera_height: float = 20.0, zoom_level: float = 0.5):
         super().__init__(camera_height, zoom_level)
         self.trajectory_geometries = []
 

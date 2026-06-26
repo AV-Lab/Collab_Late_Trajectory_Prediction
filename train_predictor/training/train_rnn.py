@@ -1,4 +1,6 @@
 from intelligent_vehicles.predictors.sequential.rnn_nll import RNNPredictorNLL
+from intelligent_vehicles.predictors.sequential.rnn_bivariate_nll import RNNPredictorBivariateNLL
+from intelligent_vehicles.predictors.sequential.rnn import RNNPredictor
 from intelligent_vehicles.predictors.dataloaders.seq_loader import SeqDataset
 from torch.utils.data import DataLoader
 import argparse
@@ -24,7 +26,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Training predictor.")
     ap.add_argument("data_path", help="Path to train data folder.")
     ap.add_argument("checkpoint_path", help="Path to checkpoints folder.")
-    ap.add_argument("--model", choices=['lstm_nll', 'transformer_nll'], default='lstm_nll', help='Training Model')
+    ap.add_argument("--model", choices=['lstm_nll', 'lstm', 'lstm_bivariate_nll'], default='lstm_nll', help='Training Model')
     ap.add_argument("--device", type=str, default='cuda:1', help='Training device')
     ap.add_argument("--hidden-size", type=int, default=128, help="Hidden size of the model.")
     ap.add_argument("--num-layers", type=int, default=2, help="Number of RNN layers.")
@@ -89,6 +91,13 @@ if __name__ == "__main__":
             valid_loader = DataLoader(SeqDataset(valid_path), batch_size=args.batch_size, shuffle=True)
     
     save_path = os.path.join(args.checkpoint_path, f"{lhsf['prefix']}_{args.model}_{int(lhsf['L'])}_{int(lhsf['H'])}_{int(lhsf['F'])}.pth")
-    predictor = RNNPredictorNLL(prediction_config)        
+    
+    if args.model == "lstm_nll":
+        predictor = RNNPredictorNLL(prediction_config)
+    elif args.model == "lstm_bivariate_nll":
+        predictor = RNNPredictorBivariateNLL(prediction_config)
+    else:
+        predictor = RNNPredictor(prediction_config)
+        
     predictor.train(train_loader, valid_loader, save_path)
     predictor.evaluate(test_loader)

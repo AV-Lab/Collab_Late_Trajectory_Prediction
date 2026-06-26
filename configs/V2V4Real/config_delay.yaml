@@ -42,7 +42,7 @@ vehicles:
       - "lidar01"
 
   vehicle_2:
-    type: "basic"
+    type: "aggregating"
     parameters:
       tracking_history: 20 # bbox to save 
       keep_track: 10
@@ -51,13 +51,13 @@ vehicles:
       device: "cuda:1"
 
     detector:
-      name: "gt"
-      #name: "centerpoint"    # [gt, gt_occ, centerpoint]
-      #detections: "detections/test/v2v_test_50/1"
+      #name: "gt_occ"
+      name: "centerpoint"    # [gt, gt_occ, centerpoint]
+      detections: "detections/test/v2v_test_50/1"
 
     tracker:
-      name: "gt"
-      #name: "3d"
+      #name: "gt"
+      name: "3d"
 
     predictor:
       name: "lstm_nll"     
@@ -69,6 +69,10 @@ vehicles:
     
     listener:
       topic: "pred" #drop: true
+      delay: #for only stochastic part specify k=0, for no delay remopve this block
+        k: 0.0197
+        mu: 3.135
+        var: 0.033 
 
     sensors:
       - "lidar01"

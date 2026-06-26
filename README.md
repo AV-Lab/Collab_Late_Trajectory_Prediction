@@ -11,4 +11,6 @@ python create_trajecotry_data.py OPV2V /media/nadya/86bf701c-9a26-47cf-89c1-3a95
 python create_trajecotry_data.py OPV2V /media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/OPV2V/test/test_data.pkl test --global
 
 #### train predictor 
-python -m train_predictor.training.train train_predictor/generators/data/OPV2V_L10_H20_S3_F10 train_predictor/checkpoints
+python -m train_predictor.training.train_rnn train_predictor/generators/data/OPV2V_L10_H20_S3_F10 train_predictor/checkpoints --model lstm
+python -m train_predictor.training.train_rnn train_predictor/generators/data/OPV2V_L10_H20_S3_F10 train_predictor/checkpoints --model lstm_nll
+python -m train_predictor.training.train_rnn train_predictor/generators/data/OPV2V_L10_H20_S3_F10 train_predictor/checkpoints --model lstm_bivariate_nll

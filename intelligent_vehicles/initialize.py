@@ -26,18 +26,18 @@ logger = logging.getLogger(__name__)
 
 def parse_meta(meta_path):
     scenarios = {}
+
     meta_path = Path(meta_path)
     with meta_path.open("r") as f:
-        lines = [ln.strip() for ln in f]
-        
+        lines = [ln.strip() for ln in f if ln.strip()]
+
+    fps = int(lines[2].split("=")[1])
+    max_vehicles = int(lines[4].split("=")[1])
 
     for line in lines[6:]:
-        scen, n = line.rsplit(",", 1)
-        scenarios[scen] = int(n)
-    
-    fps = int(lines[2].split("=")[1])
-    max_vehicles = int(lines[3].split("=")[1])
-                
+        scen, n, duration = line.rsplit(",", 2)
+        scenarios[scen] = (int(n), float(duration))
+
     return fps, max_vehicles, scenarios
 
 

@@ -13,6 +13,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 from intelligent_vehicles.predictors.sequential.rnn_nll import RNNPredictorNLL
+from intelligent_vehicles.predictors.sequential.rnn_bivariate_nll import RNNPredictorBivariateNLL
 
 class RNNWrapperNLL:
     def __init__(self, prediction_config):           
@@ -31,7 +32,7 @@ class RNNWrapperNLL:
             
         return past_trajs
       
-    def predict(self, past_trajs):
+    def predict(self, past_trajs, trajectories=None):
         """
         No resampling. Returns step-indexed dicts.
 

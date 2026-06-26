@@ -74,7 +74,7 @@ class AggregatingIV(BasicIV):
     def run_predictor(self, tracklets, sim_time_s, trajectories):
         t_all0 = time.perf_counter()
 
-        # ------------------ NEW: apply arrived packets at current sim time ------------------
+        # arrived packets at current sim time ------------------
         sim_ms = int(round(sim_time_s * 1000.0))
         arrived = self._listener.pop_arrived(sim_ms)
         for topic, payload in arrived:
@@ -84,7 +84,7 @@ class AggregatingIV(BasicIV):
         # predictor input + forward
         t0 = time.perf_counter()
         past_trajs = self.predictor.format_input(tracklets)
-        mean_trajs, cov_trajs = self.predictor.predict(past_trajs)
+        mean_trajs, cov_trajs = self.predictor.predict(past_trajs, trajectories)
         t_pred_ms = (time.perf_counter() - t0) * 1000.0
 
         # timestamp + ego time indices
@@ -116,7 +116,7 @@ class AggregatingIV(BasicIV):
 
         # fusion
         t0 = time.perf_counter()
-        fused_predictions = self.fuser.fuse(ego_ts, gated_preds_with_pools, trajectories)
+        fused_predictions = self.fuser.fuse(ego_ts, gated_preds_with_pools, trajectories) ######## !!!!!!!!!!!!!!! trajectories are only passed for visualization
         t_fuse_ms = (time.perf_counter() - t0) * 1000.0
 
         # post-fusion graph ops
