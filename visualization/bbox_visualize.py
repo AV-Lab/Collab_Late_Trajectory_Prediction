@@ -14,7 +14,6 @@ World-frame visualiser (legacy Visualizer, open-top option + heading flags)
 """
 
 from __future__ import annotations
-import logging
 from typing import Dict, List
 
 import numpy as np
@@ -25,7 +24,6 @@ DEFAULT_EGO_LENGTH = 4.5   # meters
 DEFAULT_EGO_WIDTH  = 1.9   # meters
 DEFAULT_EGO_HEIGHT = 1.6 
 
-logger = logging.getLogger(__name__)
 
 def _color_from_occ(occ: float | None) -> tuple[float, float, float]:
     """Return an (R,G,B) in [0,1] based on occ_l1 thresholds."""
@@ -147,7 +145,7 @@ class BBoxVisualizer:
     # ........................................................ ego / agents
     def update_ego_bbox(self, ego_pose: Dict):
         if ego_pose is None:
-            logger.error("No ego_pose provided")
+            print("No ego_pose provided")
             return
     
         # Fallback dimensions if they are missing from ego_pose
@@ -155,10 +153,10 @@ class BBoxVisualizer:
         width  = ego_pose.get("width",  DEFAULT_EGO_WIDTH)
         height = ego_pose.get("height", DEFAULT_EGO_HEIGHT)
     
-        x = ego_pose.get("x")
-        y = ego_pose.get("y")
-        z = ego_pose.get("z", 0.0)
-        yaw = ego_pose.get("yaw", 0.0)
+        x = ego_pose["x"]
+        y = ego_pose["y"]
+        z = ego_pose["z"]
+        yaw = ego_pose["yaw"]
     
         self._add_box((x, y, z),length, width, height, yaw, (0, 1, 0))
         self._add_heading((x, y, z), length, yaw,(0, 1, 0))

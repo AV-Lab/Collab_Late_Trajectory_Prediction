@@ -6,11 +6,9 @@ Created on Sun Mar 16 20:54:00 2025
 @author: nadya
 """
 
-from intelligent_vehicles.detectors.gt_wrapper import GTWrapper, GTOccWrapper
-from intelligent_vehicles.detectors.centerpoint_wrapper import CenterPointWrapper
-import logging
+from intelligent_vehicles.detectors.gt_occ_wrapper import GTOccWrapper
+from intelligent_vehicles.detectors.gt_wrapper import GTWrapper
 
-logger = logging.getLogger(__name__)
 
 def initialize_detector(detector_config):
     if detector_config["name"] == "gt":
@@ -20,5 +18,5 @@ def initialize_detector(detector_config):
     if detector_config["name"] == "centerpoint":
         return CenterPointWrapper(detections_path=detector_config["detections"])     
     else:
-        logger.error("You specified unsupported detector class in yaml.")
+        print("You specified unsupported detector class in yaml.")
         exit

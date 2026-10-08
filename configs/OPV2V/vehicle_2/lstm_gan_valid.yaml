@@ -1,0 +1,67 @@
+# OPV2V valid: vehicle_2 aggregates with LSTM; vehicle_1 shares with GAN.
+# Category L: linear fusion with certificate confidence gate; Category S: vector GP.
+# Alignment on; KF, consensus and GT calibration off.
+dataset:
+  name: OPV2V
+  path: preprocess/preprocessed/OPV2V
+  split: valid
+  fps: 10
+ego_vehicle: vehicle_2
+vehicles:
+  vehicle_1:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cuda:0
+    detector:
+      name: gt_occ
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: ../TrajZoo/trajzoo-code/checkpoints/opv2v/bivariate/gan_bivariate_relative_k1/best.pth
+      calibration_certificate: outputs/calibration/gan_bootstrap_certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred
+  vehicle_2:
+    type: aggregating
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cuda:0
+    detector:
+      name: gt_occ
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: ../TrajZoo/trajzoo-code/checkpoints/opv2v/bivariate/lstm_bivariate_relative_k1_opv2v/best.pth
+      calibration_certificate: outputs/calibration/lstm_bootstrap_certificate.json
+    listener:
+      topic: pred
+      drop: false
+    category_l:
+      alignment:
+        align: true
+        min_points: 10
+      gate:
+        type: none
+      fusion:
+        type: linear_fusion
+    category_s:
+      alignment:
+        align: true
+        min_points: 10
+      gate:
+        type: none
+      fusion:
+        type: gp_vector
+        workers: 1
+    sensors:
+    - lidar01

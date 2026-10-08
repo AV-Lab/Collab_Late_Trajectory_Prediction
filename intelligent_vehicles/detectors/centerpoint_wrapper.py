@@ -8,13 +8,13 @@ Created on Sun Mar 16 16:11:37 2025
 
 import os
 import json
-import logging
-logger = logging.getLogger(__name__)
+
+from intelligent_vehicles.category_mapping import canonicalize_category
 
 
 class CenterPointWrapper:
     def __init__(self, detections_path):
-        logger.info("Loading CenterPOint Detetcions.")
+        print("Loading CenterPOint Detetcions.")
         self.detections = {}
         self.global_coordinates = False
         self.load(detections_path)
@@ -32,7 +32,7 @@ class CenterPointWrapper:
                     reform_data = []
                     for det in data:
                         reform_data.append({"obj_id": det["obj_id"],
-                                            "label": det["obj_type"], 
+                                            "label": canonicalize_category(det["obj_type"]),
                                             "score": 1.0,
                                             "occ_score" : 0.0,
                                             "dx": det["psr"]["scale"]["x"], 
@@ -43,7 +43,7 @@ class CenterPointWrapper:
                                             "z": det["psr"]["position"]["z"], 
                                             "yaw": det["psr"]["rotation"]["z"]})
                 self.detections[dir_].append(reform_data)                
-        logger.info("The detections are loaded.") 
+        print("The detections are loaded.")
         self.load_detections = True
         
     def time_to_index(self, t, dt=0.1):

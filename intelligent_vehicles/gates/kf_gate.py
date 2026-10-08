@@ -81,13 +81,25 @@ class KFGate:
         self.cov_cap = float(cov_cap)
         self.nis_cap = float(nis_cap)
 
+    def apply(self, preds_with_pools, tracklets):
+        """Filter local fusion candidates using their tracker features."""
+        ids_to_idx = {tracklet["id"]: index for index, tracklet in enumerate(tracklets)}
+        gated_predictions = {}
+        for node_id, values in preds_with_pools.items():
+            if node_id in ids_to_idx:
+                features = tracklets[ids_to_idx[node_id]]["kf_gate"]
+                if not self.decide(features).passed:
+                    continue
+            gated_predictions[node_id] = values
+        return gated_predictions
+
     def decide(self, features: Dict) -> KFDecision:
         eps = 1e-9
 
-        u_now = float(features.get("u_now", 0.0))
-        u_med = float(features.get("u_med", max(u_now, eps)))
-        streak = int(features.get("streak", 0))
-        med_nis = features.get("med_nis", None)
+        u_now = float(features["u_now"])
+        u_med = float(features["u_med"])
+        streak = int(features["streak"])
+        med_nis = features["med_nis"]
 
         # ratios
         rho_cov = u_now / max(u_med, eps)

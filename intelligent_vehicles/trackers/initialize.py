@@ -6,17 +6,21 @@ Created on Sun Mar 16 20:55:31 2025
 @author: nadya
 """
 
-from intelligent_vehicles.trackers.t_wrapper import TWrapper
-from intelligent_vehicles.trackers.gt_wrapper import GTWrapper
-import logging
+from intelligent_vehicles.trackers.id_association_tracker import IDAssociationTracker
+from intelligent_vehicles.trackers.metric_association_tracker import MetricAssociationTracker
 
-logger = logging.getLogger(__name__)
 
 def initialize_tracker(tracker_config):
-    if tracker_config["name"] == "gt":
-        return GTWrapper(tracker_config["tracking_history"], tracker_config["keep_track"])
-    if tracker_config["name"] == "3d":
-        return TWrapper(tracker_config["tracking_history"], tracker_config["keep_track"])     
+    if tracker_config["name"] == "id_association":
+        return IDAssociationTracker(
+            tracker_config["tracking_history"],
+            tracker_config["fps"],
+        )
+    if tracker_config["name"] == "metric_association":
+        return MetricAssociationTracker(
+            tracker_config["tracking_history"],
+            tracker_config["fps"],
+        )
     else:
-        logger.error("You specified unsupported tracker class in yaml.")
+        print("You specified unsupported tracker class in yaml.")
         exit

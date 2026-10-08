@@ -8,7 +8,33 @@ __pycache__/
 
 plots/
 detections/
+preprocess/preprocessed/
 
-# Training artifacts
-train_predictor/checkpoints/
-train_predictor/generators/data/
+# Generated evaluation outputs
+/outputs/
+
+# Local experiments and trained weights
+/checkpoints/
+/tests/
+*.pth
+*.pt
+*.ckpt
+
+# Python development artifacts
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+
+# Local environment and account files
+.env
+.env.*
+!.env.example
+/.aws/
+/.codex/
+/.agents/

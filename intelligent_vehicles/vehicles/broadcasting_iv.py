@@ -9,9 +9,8 @@ Created on Mon Jul  8 14:11:22 2024
 
 from . import BasicIV 
 from intelligent_vehicles.broadcaster import Broadcaster
-import logging
+from evaluation.paths import MESSAGE_SIZE_TMP_DIR
 import time
-logger = logging.getLogger(__name__)
 
 class BroadcastingIV(BasicIV):
     """ 
@@ -22,7 +21,7 @@ class BroadcastingIV(BasicIV):
         data_folder (str, optional): Folder for data.
         dataloader (object, optional): Dataloader object.
         predictor (object, optional): Predictor object.
-        collaboration_graph (object, optional): Collaboration graph object.
+        prediction_map (object, optional): Agent-level prediction map.
     """
     
     def __init__(self, 
@@ -35,8 +34,8 @@ class BroadcastingIV(BasicIV):
                  sensors, 
                  data, 
                  clock_step, 
-                 channel_root, 
-                 global_coordinates):
+                 channel_root,
+                 load_lidar):
         
         super().__init__(name,
                          detector_config,
@@ -46,28 +45,28 @@ class BroadcastingIV(BasicIV):
                          sensors,
                          data,
                          clock_step,
-                         global_coordinates)
+                         load_lidar)
         
-        self.broadcasting_frequency = broadcaster_config["broadcasting_frequency"]
+        self.broadcasting_interval_s = broadcaster_config["broadcasting_interval_s"]
         self._broadcaster = Broadcaster(root=channel_root, topic=broadcaster_config["topic"])
         self.next_broadcasting_time = self.starting_time + 1.0
-        self.bcast_period = 1.0 / self.broadcasting_frequency
+        self.bcast_period = self.broadcasting_interval_s
+        MESSAGE_SIZE_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        self.message_size_path = MESSAGE_SIZE_TMP_DIR / f"{self.name}.txt"
         
 
-    def _build_packet(self, predictions, ego_state, sim_time):
+    def _build_packet(self, predictions, ego_position, sim_time):
         packet = {"sender": str(self.name),
-                  "broadcasting_timestamp": float(sim_time),   
-                  "wall_time": float(time.time()),           
+                  "broadcasting_timestamp": float(sim_time),
+                  "wall_time": float(time.time()),
                   "fps": float(self.fps),
                   "pred_hz": float(self.prediction_frequency),
                   "pred_sampling": float(self.prediction_sampling),
-                  "predictions": predictions}
-        
-        if ego_state is not None:
-            packet["ego_position"] = {"x": float(ego_state.get("x", 0.0)),
-                                      "y": float(ego_state.get("y", 0.0)),
-                                      "z": float(ego_state.get("z", 0.0)),
-                                      "yaw": float(ego_state.get("yaw", 0.0))}
+                  "predictions": predictions,
+                  "ego_position": {"x": float(ego_position["x"]),
+                                   "y": float(ego_position["y"]),
+                                   "z": float(ego_position["z"]),
+                                   "yaw": float(ego_position["yaw"])}}
             
         
         return packet
@@ -81,7 +80,7 @@ class BroadcastingIV(BasicIV):
             self.next_observation_time += self.obs_period
             
             if frame_data is None:
-                logger.info(f"Vehicle {self.name} left the scene.")
+                print(f"Vehicle {self.name} left the scene.")
                 self.next_observation_time = self.starting_time
                 self.next_prediction_time = self.starting_time + 1.0
                 self.next_broadcasting_time = self.starting_time + 1.0
@@ -95,15 +94,11 @@ class BroadcastingIV(BasicIV):
             
             # update location
             if ego_state is not None:
-                self.cur_location = [{"x": ego_state["x"], 
-                                      "y": ego_state["y"], 
-                                      "z": ego_state["z"], 
-                                      "yaw": ego_state["yaw"]}]
-                self.cur_location = self.ego_motion_compensation(self.cur_location, calibration)[0] 
+                self.cur_location = ego_state
            
             # Run detection
             detections = self.run_detector(t, frame_data, calibration, scenario)
-            if not self.global_coordinates or not self.detector.global_coordinates:
+            if not self.detector.global_coordinates:
                 detections = self.ego_motion_compensation(detections, calibration)
         
             # Update the tracker 
@@ -113,17 +108,24 @@ class BroadcastingIV(BasicIV):
             # Prediction gate (due-or-late)
             if (t + self.delta) >= self.next_prediction_time: 
                 if len(tracklets) > 0:
-                    predictions = self.run_predictor(tracklets, t, trajectories)  # pass sim-time 't'
-                    response = (predictions, tracklets, trajectories, point_cloud, ego_state, calibration)
+                    predictions = self.run_predictor(tracklets, t)  # pass sim-time 't'
+                    response = {
+                        "predictions": predictions,
+                        "tracklets": tracklets,
+                        "trajectories": trajectories,
+                        "point_cloud": point_cloud,
+                        "ego_state": ego_state,
+                        "calibration": calibration,
+                    }
                 self.next_prediction_time += self.pred_period  
             
         # Broadcasting gate (due-or-late)
         if (t + self.delta) >= self.next_broadcasting_time: 
-            predictions = self.object_graph.extract_predictions(category_II_nodes=False)
-            packet = self._build_packet(predictions, ego_state, t)  # include sim-time
+            predictions = self.prediction_map.extract_predictions(category_II_nodes=False)
+            packet = self._build_packet(predictions, self.cur_location, t)  # include sim-time
             message_size_bytes = self._broadcaster.send(packet)
             self.next_broadcasting_time += self.bcast_period  
-            logger.info(f"[{self.name}] send broadcast with message size {message_size_bytes}")
-            with open(f"{self.name}_message_size.txt", 'a') as file: 
-                file.write("{}\n".format(message_size_bytes))
+            print(f"[{self.name}] send broadcast with message size {message_size_bytes}")
+            with self.message_size_path.open("a") as file:
+                file.write(f"{message_size_bytes}\n")
         return response

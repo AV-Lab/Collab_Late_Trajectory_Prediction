@@ -1,9 +1,8 @@
 dataset:
   name: "V2V4Real"
-  path: "/media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/data/V2V4Real"
-  global_coordinates: true
+  path: "preprocess/preprocessed/V2V4Real"
   split: "test" # ["train", "valid", "test"]
-  preprocessed: false
+  fps: 10
 
 ego_vehicle: "vehicle_2"
 
@@ -11,10 +10,9 @@ vehicles:
   vehicle_1:
     type: "broadcasting"
     parameters:
-      tracking_history: 20 # bbox to save 
-      keep_track: 10
-      prediction_frequency: 10
-      prediction_horizon: 2
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
       device: "cuda:1"
 
     detector:
@@ -23,15 +21,15 @@ vehicles:
       detections: "detections/test/v2v_test_50/0"
 
     tracker:
-      #name: "gt"
-      name: "3d"
+      # name: "id_association"
+      name: "metric_association"
 
     predictor:
       name: "lstm_nll"     
       checkpoint: "train_predictor/checkpoints/V2V4Real_lstm_nll_10_20_10.pth"
 
     broadcaster:
-      broadcasting_frequency: 10
+      broadcasting_interval_s: 0.1
       topic: "pred"
     
     listener:
@@ -44,10 +42,9 @@ vehicles:
   vehicle_2:
     type: "aggregating"
     parameters:
-      tracking_history: 20 # bbox to save 
-      keep_track: 10
-      prediction_frequency: 10
-      prediction_horizon: 2
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
       device: "cuda:1"
 
     detector:
@@ -56,15 +53,15 @@ vehicles:
       detections: "detections/test/v2v_test_50/1"
 
     tracker:
-      #name: "gt"
-      name: "3d"
+      # name: "id_association"
+      name: "metric_association"
 
     predictor:
       name: "lstm_nll"     
       checkpoint: "train_predictor/checkpoints/V2V4Real_lstm_nll_10_20_10.pth"
 
     broadcaster:
-      broadcasting_frequency: 10
+      broadcasting_interval_s: 0.1
       topic: "pred"
     
     listener:
@@ -73,6 +70,9 @@ vehicles:
         k: 0.0197
         mu: 3.135
         var: 0.033 
+
+    fusion:
+      type: "gp" # [gp, gp_vector]
 
     sensors:
       - "lidar01"

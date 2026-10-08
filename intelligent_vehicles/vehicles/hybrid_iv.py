@@ -18,7 +18,7 @@ class HybridIV:
         data_folder (str, optional): Folder for data.
         dataloader (object, optional): Dataloader object.
         predictor (object, optional): Predictor object.
-        collaboration_graph (object, optional): Collaboration graph object.
+        prediction_map (object, optional): Agent-level prediction map.
     """
     
 
@@ -33,8 +33,7 @@ class HybridIV:
                  sensors, 
                  data, 
                  clock_step, 
-                 channel_root, 
-                 global_coordinates):
+                 channel_root,
+                 load_lidar):
         pass
-    
     

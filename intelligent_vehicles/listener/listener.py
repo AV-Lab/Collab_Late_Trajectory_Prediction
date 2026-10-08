@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import threading
 import heapq
 import math
@@ -10,12 +9,16 @@ import numpy as np
 import zmq
 import zmq.asyncio as azmq
 import zstandard as zstd
-import os
 
-logger = logging.getLogger(__name__)
+from evaluation.paths import DELAY_TMP_DIR
+
 
 
 class Listener:
+    POSITION_SCALE = 100.0
+    COVARIANCE_SCALE = 4096.0
+    POSITION_QUANTIZATION_VARIANCE = 2.0 * ((1.0 / POSITION_SCALE) ** 2 / 12.0)
+
     """
     Unified strategy:
       - Always receives messages asynchronously and buffers them with an arrival timestamp.
@@ -30,7 +33,17 @@ class Listener:
           but is NOT used (no async thread graph updates).
     """
 
-    def __init__(self, root: str, topic: str, on_message=None, k=None, mu=None, var=None, drop=False):
+    def __init__(
+        self,
+        vehicle_name: str,
+        root: str,
+        topic: str,
+        on_message=None,
+        k=None,
+        mu=None,
+        var=None,
+        drop=False,
+    ):
         # config
         self._root = root
         self._topic = topic
@@ -64,24 +77,52 @@ class Listener:
         self._rng = np.random.default_rng(0)
 
         if (self._mu is None) or (self._sigma is None):
-            logger.info("[Listener] delay: k=%.6f ms/B, LogNormal disabled (mu/var not provided) -> Δ=b*k", self._k)
+            print(f"[Listener] delay: k={self._k:.6f} ms/B, LogNormal disabled (mu/var not provided) -> Δ=b*k")
         else:
-            logger.info("[Listener] delay: k=%.6f ms/B, LogNormal(mu=%.3f, sigma=%.3f)", self._k, self._mu, self._sigma)
+            print(f"[Listener] delay: k={self._k:.6f} ms/B, LogNormal(mu={self._mu:.3f}, sigma={self._sigma:.3f})")
 
-        logger.info("[Listener] packet drop: %s", "enabled" if self._drop else "disabled")
+        print(f"[Listener] packet drop: {'enabled' if self._drop else 'disabled'}")
 
-        self._delay_log_path = "listener_delay_log.txt"
-        if os.path.exists(self._delay_log_path):
-            os.remove(self._delay_log_path)
+        DELAY_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        self._delay_log_path = DELAY_TMP_DIR / f"{vehicle_name}.txt"
 
     @staticmethod
     def _expand_entry(entry):
-        loc = [v / 100.0 for v in entry["b"]]
+        loc = [v / Listener.POSITION_SCALE for v in entry["b"]]
         bx, by = loc[0], loc[1]
-        t_s = [tm / 1000.0 for tm in entry["T"]]
-        xy = [[bx + dx / 100.0, by + dy / 100.0] for dx, dy in entry["P"]]
-        cov = [[[vx / 100.0, 0.0], [0.0, vy / 100.0]] for vx, vy in entry["V"]]
-        pred_ts_ms = int(entry.get("tt", 0))
+        n = int(entry["n"])
+        t0_ms = int(entry["t0"])
+        dt_ms = int(entry["dt"])
+        if n <= 0 or dt_ms < 0 or (n > 1 and dt_ms == 0):
+            raise ValueError("Invalid compact prediction time fields.")
+        t_s = ((t0_ms + np.arange(n, dtype=np.int64) * dt_ms) / 1000.0).tolist()
+
+        position_values = np.frombuffer(entry["P"], dtype="<i2")
+        if position_values.size != 2 * n:
+            raise ValueError("Packed position count does not match prediction count.")
+        offsets = position_values.reshape(n, 2).astype(np.float64)
+        offsets /= Listener.POSITION_SCALE
+        offsets += np.asarray([bx, by])
+        xy = offsets.tolist()
+
+        covariance_values = np.frombuffer(entry["V"], dtype="<i2")
+        if covariance_values.size != 3 * n:
+            raise ValueError("Packed covariance count does not match prediction count.")
+        transformed = covariance_values.reshape(n, 3).astype(np.float64)
+        transformed /= Listener.COVARIANCE_SCALE
+
+        std_x = np.exp(transformed[:, 0])
+        std_y = np.exp(transformed[:, 1])
+        correlation = np.tanh(transformed[:, 2])
+        variance_x = std_x ** 2 + Listener.POSITION_QUANTIZATION_VARIANCE
+        variance_y = std_y ** 2 + Listener.POSITION_QUANTIZATION_VARIANCE
+        covariance_xy = correlation * std_x * std_y
+        cov = np.empty((n, 2, 2), dtype=np.float64)
+        cov[:, 0, 0] = variance_x
+        cov[:, 0, 1] = covariance_xy
+        cov[:, 1, 0] = covariance_xy
+        cov[:, 1, 1] = variance_y
+        pred_ts_ms = int(entry["tt"])
 
         return {
             "id": entry["id"],
@@ -91,26 +132,26 @@ class Listener:
             "prediction": {
                 "t": t_s,
                 "xy": xy,
-                "cov": cov
+                "cov": cov.tolist()
             },
         }
 
     @staticmethod
     def _expand_packet(pkt):
-        ego = pkt.get("ego", [0.0, 0.0, 0.0, 0.0])
+        ego = pkt["ego"]
         expanded = {
-            "sender": str(pkt.get("s", "")),
-            "timestamp_ms": int(pkt.get("ts", 0)),
-            "fps": float(pkt.get("fps", 0.0)),
-            "pred_hz": float(pkt.get("phz", 0.0)),
-            "pred_sampling": float(pkt.get("ps", 0.0)),
+            "sender": str(pkt["s"]),
+            "timestamp_ms": int(pkt["ts"]),
+            "fps": float(pkt["fps"]),
+            "pred_hz": float(pkt["phz"]),
+            "pred_sampling": float(pkt["ps"]),
             "ego_position": {
                 "x": float(ego[0]),
                 "y": float(ego[1]),
                 "z": float(ego[2]),
                 "yaw": float(ego[3]),
             },
-            "predictions": [Listener._expand_entry(e) for e in (pkt.get("pred") or [])],
+            "predictions": [Listener._expand_entry(e) for e in pkt["pred"]],
         }
         return expanded
 
@@ -151,7 +192,7 @@ class Listener:
     # -------------------- async receive loop --------------------
 
     async def _loop_coro(self):
-        logger.info("[Listener] loop started; subscribed to '%s'", self._topic)
+        print(f"[Listener] loop started; subscribed to '{self._topic}'")
         self._running = True
         try:
             while self._running:
@@ -160,11 +201,11 @@ class Listener:
                     continue
 
                 if flag != b"z":
-                    logger.warning("[Listener] unexpected flag=%r (expected b'z')", flag)
+                    print(f"[Listener] unexpected flag={flag!r} (expected b'z')")
                 try:
                     raw = self._zd.decompress(data)
                 except Exception:
-                    logger.exception("[Listener] zstd decompress failed")
+                    print("[Listener] zstd decompress failed")
                     continue
 
                 try:
@@ -174,13 +215,13 @@ class Listener:
                     else:
                         payload = pkt
                 except Exception:
-                    logger.exception("[Listener] msgpack unpack/expand failed")
+                    print("[Listener] msgpack unpack/expand failed")
                     continue
 
                 # ALWAYS buffer with arrival time
                 try:
-                    send_ms = int(payload.get("timestamp_ms", 0))
-                    bytes_len = int(len(data))  # compressed payload size (bytes)
+                    send_ms = int(payload["timestamp_ms"])
+                    bytes_len = len(topic) + len(flag) + len(data)
 
                     if self._should_drop_packet(bytes_len):
                         continue
@@ -195,12 +236,12 @@ class Listener:
                     with self._buf_lock:
                         heapq.heappush(self._buf_heap, (arrival_ms, next(self._seq), topic, payload))
                 except Exception:
-                    logger.exception("[Listener] buffering failed")
+                    print("[Listener] buffering failed")
 
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception("[Listener] loop error")
+            print("[Listener] loop error")
         finally:
             try:
                 if self._sock is not None:
@@ -208,13 +249,13 @@ class Listener:
             except Exception:
                 pass
             self._running = False
-            logger.info("[Listener] loop stopped")
+            print("[Listener] loop stopped")
 
     # -------------------- thread management --------------------
 
     def start_in_background(self):
         if self._thread and self._thread.is_alive():
-            logger.info("[Listener] already running")
+            print("[Listener] already running")
             return
 
         def _run():
@@ -233,7 +274,7 @@ class Listener:
                 self._started_evt.set()
                 self._loop.run_forever()
             except Exception:
-                logger.exception("[Listener] background thread failed to start")
+                print("[Listener] background thread failed to start")
             finally:
                 try:
                     if self._sock is not None:
@@ -244,9 +285,9 @@ class Listener:
         self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
         if self._started_evt.wait(timeout=1.0):
-            logger.info("[Listener] background thread started")
+            print("[Listener] background thread started")
         else:
-            logger.error("[Listener] failed to signal start")
+            print("[Listener] failed to signal start")
 
     def stop_in_background(self):
         if not self._loop:

@@ -11,14 +11,12 @@ import os
 import time
 import time
 import numpy as np
-import logging
-logger = logging.getLogger(__name__)
 
 from intelligent_vehicles.vehicles.dataloader import TrajDataloader
 from intelligent_vehicles.detectors.initialize import initialize_detector
 from intelligent_vehicles.trackers.initialize import initialize_tracker
 from intelligent_vehicles.predictors.initialize import initialize_predictor
-from intelligent_vehicles.graphs.initialize import initialize_object_graph
+from intelligent_vehicles.objectstore import initialize_prediction_map
 
 
 class BasicIV:
@@ -30,12 +28,12 @@ class BasicIV:
         data_folder (str, optional): Folder for data.
         dataloader (object, optional): Dataloader object.
         predictor (object, optional): Predictor object.
-        collaboration_graph (object, optional): Collaboration graph object.
+        prediction_map (object, optional): Agent-level prediction map.
     """
     
 
-    def _init_dataloader(self, data_file, sensors, fps, global_coordinates):
-        return TrajDataloader(data_file, sensors, fps, global_coordinates)
+    def _init_dataloader(self, data_file, sensors, fps, load_lidar):
+        return TrajDataloader(data_file, sensors, fps, load_lidar)
 
     def _init_detector(self, detector_config):
         print(f"Initializing detector with config: {detector_config}")
@@ -49,9 +47,9 @@ class BasicIV:
         print(f"Initializing predictor with config: {predictor_config}")
         self.predictor = initialize_predictor(predictor_config)
         
-    def _init_object_graph(self):
-        print(f"Initializing object graph")
-        self.object_graph = initialize_object_graph()
+    def _init_prediction_map(self):
+        print("Initializing prediction map")
+        self.prediction_map = initialize_prediction_map()
     
     def run_detector(self, t, frame_data, calibration, scenario=None):
         if hasattr(self.detector, "load_detections") and self.detector.load_detections:
@@ -67,21 +65,14 @@ class BasicIV:
         return tracklets
     
 
-    def run_predictor(self, tracklets, sim_time_s, trajectories):
+    def run_predictor(self, tracklets, sim_time_s):
         # measure start time
-  
+        pred_ts_ms = int(round(sim_time_s * 1000.0))
         past_trajs = self.predictor.format_input(tracklets)       
-        pred_ts_ms = int(round(sim_time_s * 1000.0))  # coordinated sim time    
-        mean_trajs, cov_trajs = self.predictor.predict(past_trajs, trajectories)
-        self.object_graph.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
-        predictions = self.object_graph.extract_predictions()  
+        mean_trajs, cov_trajs = self.predictor.predict(past_trajs)
+        self.prediction_map.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
+        predictions = self.prediction_map.extract_predictions()
         return predictions
-    
-    def lidar_pc_to_world_coord(self, point_cloud, calibration):
-        T_lidar_world = np.array(calibration["ego_to_world"]) @ np.array(calibration["lidar_to_ego"])    
-        xyz_h = np.hstack([point_cloud, np.ones((point_cloud.shape[0], 1), dtype=np.float32)])
-        point_cloud = (T_lidar_world @ xyz_h.T).T[:, :3]
-        return point_cloud
     
     def reset_time_steps(self):
         self.starting_time = 0.0  
@@ -91,7 +82,7 @@ class BasicIV:
     def reset(self):
         self.reset_time_steps()
         self.tracker.reset()
-        self.object_graph.reset()
+        self.prediction_map.reset()
     
     def ego_motion_compensation(self, detections, calibration):
         """
@@ -125,8 +116,8 @@ class BasicIV:
                  parameters, 
                  sensors, 
                  data,
-                 clock_step, 
-                 global_coordinates):
+                 clock_step,
+                 load_lidar):
     
         self.name = name
         self.cur_location = None
@@ -136,35 +127,40 @@ class BasicIV:
 
         # timing/init
         self.reset_time_steps()
-        self.global_coordinates = global_coordinates
 
         # params
-        self.tracking_history = parameters["tracking_history"]
-        self.keep_track = parameters["keep_track"]
-        self.prediction_frequency = parameters["prediction_frequency"]
-        self.prediction_horizon = parameters["prediction_horizon"]
+        self.fps = parameters["fps"]
+        self.tracking_buffer_s = parameters["tracking_buffer_s"]
+        self.observed_past_s = parameters["observed_past_s"]
+        self.prediction_horizon_s = parameters["prediction_horizon_s"]
         self.device = parameters["device"]
+
+        self.tracking_buffer = round(self.tracking_buffer_s * self.fps)
+        self.observed_past = round(self.observed_past_s * self.fps)
+        self.prediction_horizon = round(self.prediction_horizon_s * self.fps)
+        self.prediction_frequency = self.fps
         
         detector_config["device"] = self.device
         predictor_config["device"] = self.device
-        tracker_config["tracking_history"] = self.tracking_history
-        tracker_config["keep_track"] = self.keep_track
+        tracker_config["tracking_history"] = self.tracking_buffer
+        tracker_config["fps"] = self.fps
+        predictor_config["observed_past"] = self.observed_past
         predictor_config["prediction_horizon"] = self.prediction_horizon
+        predictor_config["fps"] = self.fps
         
         # intialize predictor         
         self._init_predictor(predictor_config)
-        self.fps = self.predictor.fps
-        self.prediction_sampling = self.predictor.fps
+        self.prediction_sampling = self.fps
         self.obs_period  = 1.0 / self.fps
-        self.pred_period = 1.0 / self.prediction_frequency
+        self.pred_period = 1.0 / self.fps
         self.delta       = clock_step
 
-        # intialize detector, tracker, object graph         
+        # intialize detector, tracker, prediction map
         self._init_detector(detector_config)
         self._init_tracker(tracker_config)
-        self._init_object_graph()
+        self._init_prediction_map()
         
-        self.loader = self._init_dataloader(data, sensors, self.fps, self.global_coordinates)
+        self.loader = self._init_dataloader(data, sensors, self.fps, load_lidar)
     
     
     def run(self, t, scenario=None):
@@ -175,7 +171,7 @@ class BasicIV:
             self.next_observation_time += self.obs_period
             
             if frame_data is None:
-                logger.info(f"Vehicle {self.name} left the scene.")
+                print(f"Vehicle {self.name} left the scene.")
                 return None
             
             # if we received observation 
@@ -183,17 +179,14 @@ class BasicIV:
             calibration = frame_data["calibration"]
             trajectories = frame_data["trajectories"]
             point_cloud = frame_data["lidar"]
-            point_cloud = self.lidar_pc_to_world_coord(point_cloud, calibration)
                  
             # update location
             if ego_state is not None:
                 self.cur_location = ego_state
-                if not self.global_coordinates:
-                    self.cur_location = self.ego_motion_compensation([self.cur_location], calibration)[0] 
 
             # Run detection            
             detections = self.run_detector(t, frame_data, calibration, scenario)
-            if not self.global_coordinates or not self.detector.global_coordinates:
+            if not self.detector.global_coordinates:
                 detections = self.ego_motion_compensation(detections, calibration)
                 
             # Update the tracker 
@@ -202,8 +195,15 @@ class BasicIV:
             # Due-or-late gate for prediction            
             if (t + self.delta) >= self.next_prediction_time:
                 if len(tracklets) > 0:
-                    predictions = self.run_predictor(tracklets, t, trajectories) 
-                    response = (predictions, tracklets, trajectories, point_cloud, ego_state)
+                    predictions = self.run_predictor(tracklets, t)
+                    response = {
+                        "predictions": predictions,
+                        "tracklets": tracklets,
+                        "trajectories": trajectories,
+                        "point_cloud": point_cloud,
+                        "ego_state": ego_state,
+                        "calibration": calibration,
+                    }
                 self.next_prediction_time += self.pred_period  
             
         return response

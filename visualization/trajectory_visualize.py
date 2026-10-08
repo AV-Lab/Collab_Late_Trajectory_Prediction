@@ -1,11 +1,9 @@
-import logging
 import numpy as np
 import open3d as o3d
 
 from visualization.bbox_visualize import BBoxVisualizer
 from visualization.utils import force_camera_pose
 
-logger = logging.getLogger(__name__)
 
 
 class PredictorVisualizer(BBoxVisualizer):
@@ -31,11 +29,15 @@ class PredictorVisualizer(BBoxVisualizer):
         self.trajectory_geometries = []
 
     # ---------- transforms ----------
-    def update_cloud(self, pc_dict):
-        pc = pc_dict["data"] if "data" in pc_dict else pc_dict           
-        xyz = pc[:, :3].astype(np.float32)
-        self.cloud.points = o3d.utility.Vector3dVector(xyz)
-        self.cloud.colors = o3d.utility.Vector3dVector(np.full_like(xyz, 1.0))
+    def update_cloud(self, point_cloud, calibration):
+        xyz = point_cloud[:, :3].astype(np.float32)
+        lidar_to_world = (
+            np.asarray(calibration["ego_to_world"])
+            @ np.asarray(calibration["lidar_to_ego"])
+        )
+        xyz_world = xyz @ lidar_to_world[:3, :3].T + lidar_to_world[:3, 3]
+        self.cloud.points = o3d.utility.Vector3dVector(xyz_world)
+        self.cloud.colors = o3d.utility.Vector3dVector(np.full_like(xyz_world, 1.0))
         self.vis.update_geometry(self.cloud)
     #---------------------------------------------------------------------------------------
     
@@ -113,6 +115,7 @@ class PredictorVisualizer(BBoxVisualizer):
         self,
         point_cloud,
         ego_pose,
+        calibration,
         forecasts: dict,
         show_past: bool = False,
         show_future: bool = False,
@@ -121,7 +124,7 @@ class PredictorVisualizer(BBoxVisualizer):
         sigma_scale: float = 1.0,
     ):
 
-        self.update_cloud(point_cloud)
+        self.update_cloud(point_cloud, calibration)
         
         for g in self.bbox_geometries + self.trajectory_geometries:
             self.vis.remove_geometry(g, reset_bounding_box=False)
@@ -137,7 +140,7 @@ class PredictorVisualizer(BBoxVisualizer):
         dets_GT, dets_PRED, dets_FP = [], [], []
 
         ####################### Display macthes ########################################
-        for m in forecasts.get("matched", []):
+        for m in forecasts["matched"]:
             gb = np.asarray(m["gt"]["bbox"], float)
             pb = np.asarray(m["pred"]["bbox"], float)
 
@@ -161,7 +164,7 @@ class PredictorVisualizer(BBoxVisualizer):
                 if gt_past.size:
                     self.draw_poly_pts(gt_past, z_ref, self.RED, r_pts=0.05, z_off=0.02)
             if show_future:
-                gt_fut_xy = np.asarray(m["gt"].get("future"), dtype=float)
+                gt_fut_xy = np.asarray(m["gt"]["future"], dtype=float)
                 self.draw_poly_pts(gt_fut_xy, z_ref, self.RED, bold=True)
 
             # Pred past/ future (PURPLE)
@@ -170,18 +173,18 @@ class PredictorVisualizer(BBoxVisualizer):
                 if pred_past.size:
                     self.draw_poly_pts(pred_past, z_ref, self.PURPLE, r_pts=0.05, z_off=0.02)
             if show_future:
-                fut_d = m["pred"].get("future", {})
+                fut_d = m["pred"]["future"]
                 if isinstance(fut_d, dict) and fut_d:
                     ts = sorted(fut_d.keys(), key=float)
                     fut_xy = np.array([fut_d[t] for t in ts], float)
                     self.draw_poly_pts(fut_xy, z_ref, self.PURPLE, bold=True)
 
                     # covariance ellipses tinted purple
-                    cov_d = m["pred"].get("cov", {})
+                    cov_d = m["pred"]["cov"]
                     if isinstance(cov_d, dict) and cov_d:
                         tinted = self._tint(self.PURPLE)
                         for i, t in enumerate(ts):
-                            C = cov_d.get(t)
+                            C = cov_d[t]
                             if C is None:
                                 continue
                             C = np.asarray(C, float)
@@ -196,7 +199,7 @@ class PredictorVisualizer(BBoxVisualizer):
         ###########################################################################################
         ####################### Display missing gt objects ########################################
         if show_missing:
-            for g in forecasts.get("missed", []):
+            for g in forecasts["missed"]:
                 gb = np.asarray(g["gt"]["bbox"], float)
                 dets_GT.append({
                     "label": "GT",
@@ -209,13 +212,13 @@ class PredictorVisualizer(BBoxVisualizer):
                     if gt_past.size:
                         self.draw_poly_pts(gt_past, z_ref, self.RED, r_pts=0.05, z_off=0.02)
                 if show_future:
-                    gt_fut_xy = np.asarray(g["gt"].get("future"), dtype=float)
+                    gt_fut_xy = np.asarray(g["gt"]["future"], dtype=float)
                     self.draw_poly_pts(gt_fut_xy, z_ref, self.RED, bold=True)
                     
         ###########################################################################################
         ####################### Display false positives ########################################
         if show_false:
-            for f in forecasts.get("false_positives", []):
+            for f in forecasts["false_positives"]:
                 pb = np.asarray(f["pred"]["bbox"], float)
                 dets_FP.append({
                     "label": "FP",
@@ -224,23 +227,23 @@ class PredictorVisualizer(BBoxVisualizer):
                 })
                 z_ref = float(pb[2])
 
-                if show_past and "past" in f.get("pred", {}):
+                if show_past and "past" in f["pred"]:
                     pred_past = np.asarray(f["pred"]["past"], float)
                     if pred_past.size:
                         self.draw_poly_pts(pred_past, z_ref, self.YELLOW, r_pts=0.05, z_off=0.02)
                 if show_future:
-                    fut_d = f["pred"].get("future", {})
+                    fut_d = f["pred"]["future"]
                     if isinstance(fut_d, dict) and fut_d:
                         ts = sorted(fut_d.keys(), key=float)
                         fut_xy = np.array([fut_d[t] for t in ts], float)
                         self.draw_poly_pts(fut_xy, z_ref, self.YELLOW, bold=True)
 
                         # optional: FP covariances (tinted yellow)
-                        cov_d = f["pred"].get("cov", {})
+                        cov_d = f["pred"]["cov"]
                         if isinstance(cov_d, dict) and cov_d:
                             tinted = self._tint(self.YELLOW)
                             for i, t in enumerate(ts):
-                                C = cov_d.get(t)
+                                C = cov_d[t]
                                 if C is None:
                                     continue
                                 C = np.asarray(C, float)

@@ -11,11 +11,8 @@ import os
 import pickle
 import cv2
 import numpy as np
-import open3d as o3d
-import logging
 
 from collections import namedtuple
-from typing import List, Dict
 position = namedtuple('Position', ['x', 'y', 'z','yaw'])
 
 class TrajDataloader:
@@ -27,11 +24,80 @@ class TrajDataloader:
     
     After preloading, get_frame_data(t) returns all loaded sensor data plus trajectories for timestamp t.
     """
-    def __init__(self, pickle_path, sensors, fps, global_coord):
+    def __init__(self, pickle_path, sensors, fps, load_lidar):
         self.data_file = pickle_path
         self.sensors = sensors
         self.vehicle_fps = fps
-        self.global_coord = global_coord
+        self.load_lidar = load_lidar
+
+    @staticmethod
+    def _load_pcd_xyz(path):
+        fields = None
+        sizes = None
+        types = None
+        counts = None
+        points = None
+
+        with open(path, "rb") as f:
+            while True:
+                line = f.readline()
+                if not line:
+                    raise ValueError(f"PCD file has no DATA header: {path}")
+
+                parts = line.decode("ascii").strip().split()
+                if not parts or parts[0].startswith("#"):
+                    continue
+
+                key = parts[0].upper()
+                if key == "FIELDS":
+                    fields = parts[1:]
+                elif key == "SIZE":
+                    sizes = [int(value) for value in parts[1:]]
+                elif key == "TYPE":
+                    types = parts[1:]
+                elif key == "COUNT":
+                    counts = [int(value) for value in parts[1:]]
+                elif key == "POINTS":
+                    points = int(parts[1])
+                elif key == "DATA":
+                    data_format = parts[1].lower()
+                    break
+
+            if fields is None:
+                raise ValueError(f"PCD file has no FIELDS header: {path}")
+
+            xyz_indices = [fields.index(axis) for axis in ("x", "y", "z")]
+            if data_format == "ascii":
+                return np.loadtxt(
+                    f,
+                    usecols=xyz_indices,
+                    dtype=np.float32,
+                    ndmin=2,
+                )
+
+            if data_format != "binary":
+                raise ValueError(f"Unsupported PCD DATA format '{data_format}': {path}")
+
+            if sizes is None or types is None:
+                raise ValueError(f"Binary PCD file has incomplete type metadata: {path}")
+            if counts is None:
+                counts = [1] * len(fields)
+
+            type_map = {
+                ("F", 4): "<f4", ("F", 8): "<f8",
+                ("I", 1): "<i1", ("I", 2): "<i2", ("I", 4): "<i4",
+                ("U", 1): "<u1", ("U", 2): "<u2", ("U", 4): "<u4",
+            }
+            dtype_fields = []
+            for field, size, type_, count in zip(fields, sizes, types, counts):
+                dtype = type_map[(type_.upper(), size)]
+                dtype_fields.append((field, dtype) if count == 1 else (field, dtype, (count,)))
+
+            data = np.fromfile(f, dtype=np.dtype(dtype_fields), count=points or -1)
+            return np.column_stack([data[axis] for axis in ("x", "y", "z")]).astype(
+                np.float32,
+                copy=False,
+            )
         
     def extract_all_scenarios(self):
         with open(self.data_file, 'rb') as f:
@@ -83,8 +149,10 @@ class TrajDataloader:
                     loaded['images'][sensor] = cv2.imread(path) if os.path.isfile(path) else None
                 
             # Load LiDAR data
-            lidar_path = frame_info.get("lidar", "")
-            if lidar_path and os.path.isfile(lidar_path):
+            lidar_path = frame_info["lidar"]
+            if not self.load_lidar:
+                loaded['lidar'] = None
+            elif lidar_path and os.path.isfile(lidar_path):
             
                 if lidar_path.endswith(".npy") or lidar_path.endswith(".npz"):
                     loaded['lidar'] = np.load(lidar_path)
@@ -92,9 +160,7 @@ class TrajDataloader:
                         loaded['lidar'] = loaded['lidar']['data'][:, :3]
             
                 elif lidar_path.endswith(".pcd"):
-                    pcd = o3d.io.read_point_cloud(lidar_path)
-                    pts = np.asarray(pcd.points, dtype=np.float32)
-                    loaded['lidar'] = pts[:, :3]
+                    loaded['lidar'] = self._load_pcd_xyz(lidar_path)
                     
                 elif lidar_path.endswith(".bin"):
                     arr = np.fromfile(str(lidar_path), dtype=np.float32)
@@ -108,9 +174,9 @@ class TrajDataloader:
             else:
                 loaded['lidar'] = None
     
-            loaded['labels'] = frame_info.get("labels", [])
-            loaded['ego_state'] = frame_info.get("ego_state", None)
-            loaded['calibration'] = frame_info.get("calibration", {})
+            loaded['labels'] = frame_info["labels"]
+            loaded['ego_state'] = frame_info["ego_state"]
+            loaded['calibration'] = frame_info["calibration"]
     
             self.loaded_frames[t] = loaded
     
@@ -119,98 +185,55 @@ class TrajDataloader:
         
         return True
 
-    def ego_motion_compensation(self, detections, calibration) -> List[Dict[str, float]]:
-        """
-        LiDAR-frame → world-frame for each detection.
-    
-        Parameters
-        ----------
-        detections   : list of dicts with keys at least
-                       {'x','y','z','yaw', 'length','width','height', 'obj_id', ...}
-        calibration  : {
-            'lidar_to_ego':   4×4,
-            'ego_to_world':   4×4
-          }
-    
-        Returns
-        -------
-        list of dicts in world frame (same objects, in-place edited & returned)
-        """
-        T_lw = np.array(calibration["ego_to_world"]) @ np.array(calibration["lidar_to_ego"])
-        R_lw = T_lw[:3, :3]
-    
-        # ego heading = yaw of LiDAR X-axis in world frame
-        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   # atan2(y,x)   
-        compensated = []
-        
-        for det in detections:
-            # ----- position
-            pos_lidar = np.array([det["x"], det["y"], det["z"], 1.0])
-            pos_world = T_lw @ pos_lidar
-    
-            # ----- yaw  (add headings, then wrap)
-            yaw_world = det["yaw"] + ego_heading
-            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap to (-π,π]
-    
-            new_det = det.copy()
-            new_det["x"], new_det["y"], new_det["z"] = pos_world[:3]
-            new_det["yaw"] = yaw_world
-            compensated.append(new_det)
-    
-        return compensated
-
     def _compute_trajectories(self):
         """
         Build per-object trajectories in **world frame** and store them into
         self.loaded_frames[t]['trajectories'].
     
-            past   : list[position]  (ts < t)
-            current_state : np.ndarray[7]  (x,y,z,l,w,h,yaw)
-            future : list[position]  (ts > t)
+            past   : consecutive list[position]  (ts <= t)
+            current_state : np.ndarray[8]  (x,y,z,l,w,h,yaw,occlusion)
+            future : consecutive list[position]  (ts > t)
         """
-        # 1) gather every object’s time-ordered states in WORLD frame
-        trajectories = {}             # obj_id → [(t, box_dict_world), ...]
-    
+        objects_by_frame = []
         for t in self.timestamps:
-            calib   = self.loaded_frames[t]['calibration']
-            labels  = self.loaded_frames[t]['labels']
-            if not self.global_coord:
-                labels = self.ego_motion_compensation(labels, calib)  
-
-            # keep for later (debug / visualisation if you want)
+            labels = self.loaded_frames[t]['labels']
             self.loaded_frames[t]['labels_world'] = labels
-    
-            for det in labels:
-                oid = det['obj_id'] if isinstance(det, dict) else det.obj_id
-                trajectories.setdefault(oid, []).append((t, det))
-    
-        # 2) for every frame build {obj_id: {past,current_state,future}}
-        for t in self.timestamps:
+            objects_by_frame.append({det['obj_id']: det for det in labels})
+
+        for frame_index, t in enumerate(self.timestamps):
             frame_traj = {}
-    
-            for oid, seq in trajectories.items():
-                past   = [position(s['x'], s['y'], s['z'], s['yaw'])
-                          for (ts, s) in seq if ts <= t]
-                future = [position(s['x'], s['y'], s['z'], s['yaw'])
-                          for (ts, s) in seq if ts > t]
-                
-                if len(past) == 0 or len(future) == 0: continue
-    
-                state = next(
-                    ((np.array([s['x'], s['y'], s['z'],
-                               s.get('length', 0), s.get('width', 0),
-                               s.get('height', 0), s['yaw'], s['occ_l1']], dtype=np.float32), s['label'])
-                     for (ts, s) in seq if abs(ts - t) < 1e-3),
-                    None)
-    
-                if state is not None:
-                    frame_traj[oid] = {
-                        'category': state[1],    
-                        'past': past,
-                        'current_state': state[0],
-                        'future': future
-                    }
-                       
+            current_objects = objects_by_frame[frame_index]
+
+            for oid, current in current_objects.items():
+                past = []
+                for index in range(frame_index, -1, -1):
+                    obj = objects_by_frame[index].get(oid)
+                    if obj is None:
+                        break
+                    past.append(position(obj['x'], obj['y'], obj['z'], obj['yaw']))
+                past.reverse()
+
+                future = []
+                for index in range(frame_index + 1, len(self.timestamps)):
+                    obj = objects_by_frame[index].get(oid)
+                    if obj is None:
+                        break
+                    future.append(position(obj['x'], obj['y'], obj['z'], obj['yaw']))
+
+                if not future:
+                    continue
+
+                frame_traj[oid] = {
+                    'category': current['label'],
+                    'past': past,
+                    'current_state': np.array([
+                        current['x'], current['y'], current['z'],
+                        current['length'], current['width'], current['height'],
+                        current['yaw'], current['occ_l1'],
+                    ], dtype=np.float32),
+                    'future': future,
+                }
+
             self.loaded_frames[t]['trajectories'] = frame_traj
 
         
