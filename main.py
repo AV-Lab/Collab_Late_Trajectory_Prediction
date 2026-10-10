@@ -10,6 +10,16 @@ Created on Sat Mar 16 23:18:44 2024
 import argparse
 from contextlib import ExitStack
 import json
+import os
+from pathlib import Path
+
+# Select the output root before modules bind their runtime/logging paths.
+if __name__ == "__main__":
+    output_options = argparse.ArgumentParser(add_help=False)
+    output_options.add_argument("--output-dir")
+    output_args, _ = output_options.parse_known_args()
+    if output_args.output_dir is not None:
+        os.environ["COLTP_OUTPUT_DIR"] = output_args.output_dir
 
 from parser import (load_config, parse_config)
 from intelligent_vehicles.initialize import initialize_vehicles
@@ -55,6 +65,10 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
     parser.add_argument("--viz", action="store_true", help="Enable trajectory visualization.")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUTS_DIR,
+                        help="Directory for metrics and plots.")
+    parser.add_argument("--channel-root", default="ipc:///tmp/prediction",
+                        help="ZMQ channel root; use a different root for parallel runs.")
     parser.add_argument("--gt-calibration", action="store_true",
                         help="Compare original fusion with pointwise GT calibration of Category I ego/sharing and Category II sharing covariance (gp_vector only).")
     parser.add_argument("--fusion-workers", type=int, default=None,
@@ -100,8 +114,9 @@ def attach_evaluation_timestamps(response, vehicle):
 
 if __name__ == '__main__':
     args = parse_arguments()
+    args.output_dir = args.output_dir.resolve()
     
-    channel_root = "ipc:///tmp/prediction"   # use tcp://127.0.0.1:5556/.in .out 
+    channel_root = args.channel_root
     
     config_path = args.config
     print(f"Loading configuration from: {config_path}")
@@ -109,7 +124,8 @@ if __name__ == '__main__':
     ego_config = configuration["vehicles"][configuration["ego_vehicle"]]
     apply_fusion_options(ego_config, workers=args.fusion_workers, gt_calibration=args.gt_calibration)
     print("Config parsed successfully")
-    ensure_proxy_started(channel_root)
+    if any(vehicle["type"] != "basic" for vehicle in configuration["vehicles"].values()):
+        ensure_proxy_started(channel_root)
     
     dt = 0.02               # step in seconds
     clock_step =  dt / 2
@@ -133,6 +149,7 @@ if __name__ == '__main__':
             prediction_horizon=pred_len,
             observation_length=past_len,
             sample_fps=ego_vehicle.predictor.fps,
+            output_dir=args.output_dir,
         )
         control_evaluator = None
         calibration_experiment = None
@@ -147,7 +164,7 @@ if __name__ == '__main__':
                 prediction_horizon=pred_len, observation_length=past_len,
                 sample_fps=ego_vehicle.predictor.fps,
                 iou_threshold=evaluator.iou_threshold, covariance_jitter=evaluator.covariance_jitter,
-                output_dir=OUTPUTS_DIR / "gt_control",
+                output_dir=args.output_dir / "gt_control",
                 run_metadata=dict(condition="gt_control", gt_calibration=True,
                                   gt_calibration_categories=["category_I", "category_II"],
                                   gt_control_variance_floor_m2=1e-6),

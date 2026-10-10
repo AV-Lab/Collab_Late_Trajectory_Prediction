@@ -9,14 +9,13 @@ Created on Sun Mar 16 16:11:37 2025
 import os
 import json
 
-from intelligent_vehicles.category_mapping import canonicalize_category
-
-
 class CenterPointWrapper:
-    def __init__(self, detections_path):
+    def __init__(self, detections_path, reflect_lidar_y=False, max_distance_m=None):
         print("Loading CenterPOint Detetcions.")
         self.detections = {}
         self.global_coordinates = False
+        self.reflect_lidar_y = reflect_lidar_y
+        self.max_distance_m = max_distance_m
         self.load(detections_path)
         
     def load(self, detections_path):
@@ -32,7 +31,7 @@ class CenterPointWrapper:
                     reform_data = []
                     for det in data:
                         reform_data.append({"obj_id": det["obj_id"],
-                                            "label": canonicalize_category(det["obj_type"]),
+                                            "label": det["obj_type"].lower(),
                                             "score": 1.0,
                                             "occ_score" : 0.0,
                                             "dx": det["psr"]["scale"]["x"], 

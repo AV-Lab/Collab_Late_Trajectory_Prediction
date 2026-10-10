@@ -26,7 +26,6 @@ class Constants:
     DEEPACCIDENT_STEP = 1.0 / DEEPACCIDENT_FPS
 
     # OPV2V
-    OPV2V_CAMERA_SENSORS = ["camera0", "camera1", "camera2", "camera3"]
     OPV2V_FPS = 10
     OPV2V_STEP = 1.0 / OPV2V_FPS
 

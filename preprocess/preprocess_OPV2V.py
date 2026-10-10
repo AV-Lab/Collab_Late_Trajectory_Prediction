@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-OPV2V → unified pickle (DeepAccident-compatible).
+OPV2V → unified pickle in the canonical waymo_v1 world convention.
 
-Structure mirrors DeepAccident's preprocessor, but yaw is converted from
-degrees to radians so that downstream code (BBoxVisualizer, occlusions)
-sees exactly the same convention as in DeepAccident.
+World Y is reflected from CARLA, headings are wrapped radians, and velocities
+are in m/s. LiDAR files and sensor-local calibration retain their native axes.
 """
 
 from __future__ import annotations
@@ -19,9 +18,12 @@ from typing import Dict, List, Tuple
 import numpy as np
 import yaml
 
-from .math_helper import pose_to_T, inv_T
+from .math_helper import carla_pose_to_T, carla_rotation_matrix, inv_T, wrap_yaw
 from .occlusions import compute_l1_occlusion_for_frame
 from .constants import Constants
+
+
+WORLD_Y_REFLECTION = np.diag([1.0, -1.0, 1.0, 1.0])
 
 
 # ───────────────────────────────────────────────────────── helpers ───────────────────────────────────────────────────────── #
@@ -41,11 +43,11 @@ def _to_builtin(obj):
 def _read_yaml(yaml_path: Path) -> dict:
     with open(yaml_path, "r") as f:
         try:
-            return yaml.safe_load(f)
+            return yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
         except yaml.constructor.ConstructorError:
             pass
     with open(yaml_path, "r") as f:
-        data = yaml.load(f, Loader=yaml.UnsafeLoader)
+        data = yaml.load(f, Loader=getattr(yaml, "CUnsafeLoader", yaml.UnsafeLoader))
     return _to_builtin(data)
 
 
@@ -60,30 +62,16 @@ def _as_matrix(x, shape: Tuple[int, int]) -> np.ndarray:
 
 def _build_calibration(frame_yaml: dict) -> dict:
     """
-    Build a calibration dict that mirrors the DeepAccident style:
-      - 'ego_to_world', 'world_to_ego'
-      - 'lidar_to_ego', 'ego_to_lidar'
-      - per-camera intrinsics + extrinsics (lidar<->camera)
+    Build LiDAR calibration and transforms to the waymo_v1 world frame.
+    Only the world basis is reflected; the LiDAR basis remains native.
     """
-    vx, vy, vz, vroll, vyaw_deg, vpitch = frame_yaml["true_ego_pos"]
-    T_vw = pose_to_T(vx, vy, vz, vroll, vyaw_deg, vpitch, degrees=True)  # ego->world
-    T_wv = inv_T(T_vw)                                                  # world->ego
-
-    cams = {}
-    for cam in Constants.OPV2V_CAMERA_SENSORS:
-        K = _as_matrix(frame_yaml[cam]["intrinsic"], (3, 3))
-        T_lidar_camera = _as_matrix(frame_yaml[cam]["extrinsic"], (4, 4))
-        cams[cam] = {
-            "K": K.tolist(),
-            "lidar_to_camera": T_lidar_camera.tolist(),
-            "camera_to_lidar": inv_T(T_lidar_camera).tolist(),
-        }
+    T_vw = carla_pose_to_T(frame_yaml["true_ego_pos"])
+    T_wv = inv_T(T_vw)
 
     # LiDAR pose: either explicit pose in world, or extrinsic in YAML
     if "lidar_pose" in frame_yaml and frame_yaml["lidar_pose"] is not None:
-        lx, ly, lz, lroll, lyaw_deg, lpitch = frame_yaml["lidar_pose"]
-        T_lw = pose_to_T(lx, ly, lz, lroll, lyaw_deg, lpitch, degrees=True)  # lidar->world
-        T_lv = T_wv @ T_lw                                                  # lidar->ego
+        T_lw = carla_pose_to_T(frame_yaml["lidar_pose"])
+        T_lv = T_wv @ T_lw  # Native lidar->ego, before reflecting the world basis.
     elif (
         "lidar" in frame_yaml
         and isinstance(frame_yaml["lidar"], dict)
@@ -94,27 +82,26 @@ def _build_calibration(frame_yaml: dict) -> dict:
         print("[Warn] No LiDAR pose/extrinsic in YAML; using identity.")
         T_lv = np.eye(4, dtype=np.float64)
 
+    T_vw = WORLD_Y_REFLECTION @ T_vw
     calib = {
-        "cameras": cams,
+        "cameras": {},
         "lidar_to_ego": T_lv.tolist(),
         "ego_to_lidar": inv_T(T_lv).tolist(),
         "ego_to_world": T_vw.tolist(),
-        "world_to_ego": T_wv.tolist(),
+        "world_to_ego": inv_T(T_vw).tolist(),
     }
     return calib
 
 
 def _build_ego_state(frame_yaml: dict) -> dict:
-    """
-    Ego state in world coordinates, yaw in **radians** (DeepAccident convention).
-    """
+    """Ego pose and velocity in waymo_v1 world coordinates, radians and m/s."""
     vx, vy, vz, vroll, vyaw_deg, vpitch = frame_yaml["true_ego_pos"]
-    spd = float(frame_yaml.get("ego_speed", 0.0))
+    spd = float(frame_yaml.get("ego_speed", 0.0)) / 3.6
 
-    yaw_rad = math.radians(float(vyaw_deg))
+    yaw_rad = wrap_yaw(-math.radians(float(vyaw_deg)))
     return {
         "x": float(vx),
-        "y": float(vy),
+        "y": -float(vy),
         "z": float(vz),
         "yaw": yaw_rad,                        # radians
         "vel_x": spd * math.cos(yaw_rad),
@@ -125,8 +112,8 @@ def _build_ego_state(frame_yaml: dict) -> dict:
 
 def _build_labels(frame_yaml: dict) -> List[dict]:
     """
-    Per-vehicle labels in **world frame**, yaw in radians and boxes using full
-    dimensions (length/width/height), matching DeepAccident fields.
+    Vehicle bounding-box centres in waymo_v1, matching TrajZoo's state anchor.
+    Headings are radians, velocities are m/s and box dimensions are full sizes.
     """
     labels: List[dict] = []
     vehicles = frame_yaml.get("vehicles", {}) or {}
@@ -136,18 +123,25 @@ def _build_labels(frame_yaml: dict) -> List[dict]:
         W = 2.0 * float(v["extent"][1])
         H = 2.0 * float(v["extent"][2])
 
-        x, y, z = map(float, v["location"])
         roll_deg, yaw_deg, pitch_deg = map(float, v["angle"])
-        spd = float(v.get("speed", 0.0))
+        center_world = np.asarray(v["location"], dtype=np.float64).reshape(3).copy()
+        center_offset = v.get("center")
+        if center_offset is not None:
+            rotation = carla_rotation_matrix(roll_deg, yaw_deg, pitch_deg)
+            center_world += rotation @ np.asarray(center_offset, dtype=np.float64).reshape(3)
+        else:
+            center_world[2] += H / 2.0
+        x, y, z = map(float, center_world)
+        spd = float(v.get("speed", 0.0)) / 3.6
 
-        yaw_rad = math.radians(yaw_deg)
+        yaw_rad = wrap_yaw(-math.radians(yaw_deg))
 
         labels.append(
             {
                 "label": "vehicle",
                 "original_label": "vehicle",
                 "x": x,
-                "y": y,
+                "y": -y,
                 "z": z,
                 "length": L,
                 "width": W,
@@ -181,7 +175,7 @@ def preprocess_dataset(dataset_root: str, prefix: str) -> Path:
     """
     Process a single split (train/valid/test) into <split>_data.pkl.
 
-    - Yaw is converted from degrees → radians (DeepAccident convention).
+    - World states and calibration use waymo_v1, radians and meters/m/s.
     - Objects are filtered by radius 50 m around ego.
     - Occlusion scores are computed using the same code/flags as DeepAccident.
     """
@@ -209,17 +203,12 @@ def preprocess_dataset(dataset_root: str, prefix: str) -> Path:
             for ypath, frame_yaml in frame_yamls.items()
             if "true_ego_pos" not in frame_yaml or frame_yaml["true_ego_pos"] is None
         ]
-        missing_sensor_files = []
-        for ypath in all_yaml:
-            for cam in Constants.OPV2V_CAMERA_SENSORS:
-                image_path = ypath.parent / f"{ypath.stem}_{cam}.png"
-                if not image_path.is_file():
-                    missing_sensor_files.append(image_path)
-            lidar_path = ypath.parent / f"{ypath.stem}.pcd"
-            if not lidar_path.is_file():
-                missing_sensor_files.append(lidar_path)
+        missing_lidar_files = [
+            ypath.with_suffix(".pcd") for ypath in all_yaml
+            if not ypath.with_suffix(".pcd").is_file()
+        ]
 
-        if not all_yaml or missing_ego_pose or missing_sensor_files:
+        if not all_yaml or missing_ego_pose or missing_lidar_files:
             failed_scenarios += 1
             if missing_ego_pose:
                 print(
@@ -227,11 +216,11 @@ def preprocess_dataset(dataset_root: str, prefix: str) -> Path:
                     f"missing true_ego_pos in {len(missing_ego_pose)} frame(s); "
                     f"first missing frame: {missing_ego_pose[0]}"
                 )
-            elif missing_sensor_files:
+            elif missing_lidar_files:
                 print(
                     f"[SKIP] Scenario {prefix}/{scenario_name}: "
-                    f"{len(missing_sensor_files)} required sensor file(s) missing; "
-                    f"first missing file: {missing_sensor_files[0]}"
+                    f"{len(missing_lidar_files)} LiDAR file(s) missing; "
+                    f"first missing file: {missing_lidar_files[0]}"
                 )
             else:
                 print(f"[SKIP] Scenario {prefix}/{scenario_name}: no YAML frames found")
@@ -251,21 +240,11 @@ def preprocess_dataset(dataset_root: str, prefix: str) -> Path:
                 print(f"[Warn] No YAML frames in {vdir}")
                 continue
 
-            pad_len = len(yaml_files[0].stem)
-
             for f_idx, ypath in enumerate(yaml_files):
-                frame_idx = int(ypath.stem)
-
                 timestamp = f_idx * Constants.OPV2V_STEP
                 frame_yaml = frame_yamls[ypath]
 
-                # image + lidar paths
-                images = {}
-                for cam in Constants.OPV2V_CAMERA_SENSORS:
-                    img = vdir / f"{str(frame_idx).zfill(pad_len)}_{cam}.png"
-                    images[cam] = str(img)
-                lidar_path = vdir / f"{str(frame_idx).zfill(pad_len)}.pcd"
-            
+                lidar_path = ypath.with_suffix(".pcd")
 
                 # labels + ego
                 labels_full = _build_labels(frame_yaml)   # world frame, yaw in rad
@@ -293,7 +272,7 @@ def preprocess_dataset(dataset_root: str, prefix: str) -> Path:
                 calibration = _build_calibration(frame_yaml)
 
                 scenarios[scenario_name][agent][timestamp] = {
-                    "images": images,
+                    "images": {},
                     "lidar": str(lidar_path),
                     "labels": labels,
                     "ego_state": ego_state,
@@ -336,10 +315,25 @@ def preprocess_dataset(dataset_root: str, prefix: str) -> Path:
             duration = scene_durations[scene_name]
             mf.write(f"{scene_name},{nveh},{duration:.2f}\n")
             
-    data = {"scenarios": scenarios}
+    data = {
+        "metadata": {
+            "coordinate_convention": "waymo_v1",
+            "coordinate_frame": "world",
+            "coordinate_units": "meters",
+            "sample_fps": float(Constants.OPV2V_FPS),
+            "common_coordinates": True,
+            "coordinate_source_profile": "opv2v",
+            "coordinate_transform_version": 1,
+            "preprocessing_version": 2,
+        },
+        "scenarios": scenarios,
+    }
     output_pickle_path = output_dir / f"{prefix}_data.pkl"
     with open(output_pickle_path, 'wb') as f:
         pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    # Vehicle extraction must rebuild its derived files from this new dataset.
+    for path in (output_dir / "tmp").glob("vehicle_*.pkl"):
+        path.unlink()
     print(f"Saved dataset to {output_pickle_path}")
     print(f"[META] {meta_path}")
     return output_pickle_path

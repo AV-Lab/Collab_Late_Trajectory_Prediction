@@ -1,0 +1,66 @@
+# OPV2V valid: vehicle_2 is ego; real detections and motion certificates.
+# Original Category L interval fusion; Category S is disabled.
+# Vehicle order preserves dataset assignment: vehicle_1, then vehicle_2.
+dataset:
+  name: OPV2V
+  path: preprocess/preprocessed/OPV2V
+  split: valid
+  fps: 10
+ego_vehicle: vehicle_2
+vehicles:
+  vehicle_1:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: /media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/coltp_datasets/OPV2V/detections/valid/0
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred
+  vehicle_2:
+    type: aggregating
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: /media/nadya/86bf701c-9a26-47cf-89c1-3a952cb40cc1/coltp_datasets/OPV2V/detections/valid/1
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    listener:
+      topic: pred
+      drop: false
+    category_l:
+      alignment:
+        align: true
+        min_points: 10
+      gate:
+        type: none
+      fusion:
+        type: linear_fusion
+    category_s:
+      enabled: false
+    sensors:
+    - lidar01

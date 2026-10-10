@@ -1,0 +1,67 @@
+# Clean GT detection/tracking comparison: frozen bootstrap certificate.
+# Both vehicles require 10 consecutive raw GT history points; no KF imputation.
+# Original U < L0 fusion gate; cap and KF gate disabled.
+dataset:
+  name: OPV2V
+  path: preprocess/preprocessed/OPV2V
+  split: valid
+  fps: 10
+ego_vehicle: vehicle_1
+vehicles:
+  vehicle_1:
+    type: aggregating
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cuda:0
+    detector:
+      name: gt
+    tracker:
+      name: gt
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/bootstrap/certificate.json
+    listener:
+      topic: pred
+      drop: false
+    category_l:
+      alignment:
+        align: true
+        min_points: 10
+      gate:
+        type: none
+      fusion:
+        type: linear_fusion
+    category_s:
+      alignment:
+        align: true
+        min_points: 10
+      gate:
+        type: none
+      fusion:
+        type: gp_vector
+        workers: 1
+    sensors:
+    - lidar01
+  vehicle_2:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cuda:0
+    detector:
+      name: gt
+    tracker:
+      name: gt
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred

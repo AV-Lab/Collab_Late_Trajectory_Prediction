@@ -21,7 +21,11 @@ from copy import deepcopy
 import time
 
 
-_RUNTIME_HEADER = "individual_ms,collaborative_ms,fusion_ms,fused_nodes,fusion_workers\n"
+_RUNTIME_HEADER = (
+    "individual_ms,collaborative_ms,fusion_ms,fused_nodes,fusion_workers,"
+    "category_l_ms,category_l_candidates,category_l_fused_nodes,category_l_workers,"
+    "category_s_ms,category_s_candidates,category_s_fused_nodes,category_s_workers\n"
+)
 
 
 class AggregatingIV(BasicIV):
@@ -37,8 +41,7 @@ class AggregatingIV(BasicIV):
                  data,
                  clock_step,
                  channel_root,
-                 load_lidar,
-                 calibration_by_vehicle=None):
+                 load_lidar):
 
         super().__init__(name,
                          detector_config,
@@ -66,24 +69,28 @@ class AggregatingIV(BasicIV):
             k=k, mu=mu, var=var,
             drop=listener_config["drop"]
         )
-        self.calibration_by_vehicle = calibration_by_vehicle or {}
+        self.category_s_enabled = category_config["category_s"].get("enabled", True)
         local_config = category_config["category_l"]["fusion"]
-        shared_config = category_config["category_s"]["fusion"]
+        shared_config = category_config["category_s"].get("fusion", {})
         local_fuser = self._create_fuser(local_config)
         same_gp = (
-            local_config["type"] in ("gp", "gp_vector")
+            self.category_s_enabled
+            and local_config["type"] in ("gp", "gp_vector")
             and local_config["type"] == shared_config["type"]
             and local_config.get("workers", 1) == shared_config.get("workers", 1)
         )
         self.fusers = {
             "category_l": local_fuser,
-            "category_s": local_fuser if same_gp else self._create_fuser(shared_config),
+            "category_s": (local_fuser if same_gp else self._create_fuser(shared_config))
+                          if self.category_s_enabled else None,
         }
         self.kf_gate = self._create_gate(category_config["category_l"].get("gate", {}))
-        self.consensus_gate = self._create_gate(category_config["category_s"].get("gate", {}))
+        self.consensus_gate = self._create_gate(category_config["category_s"].get("gate", {})) \
+                              if self.category_s_enabled else None
         self.aligners = {
             category: PredictionTimeAligner(**config.get("alignment", {}))
             for category, config in category_config.items()
+            if config.get("enabled", True)
         }
         self.last_prediction_timestamp = None
         self.fusion_observer = None
@@ -110,10 +117,18 @@ class AggregatingIV(BasicIV):
         if config["type"] == "gp_vector":
             return GPFuserVector(workers=config.get("workers", 1))
         if config["type"] == "linear_fusion":
-            return LinearFusion(
-                ego_source_id=self.name,
-                calibration_by_vehicle=self.calibration_by_vehicle,
-            )
+            if self.certificate is None:
+                raise ValueError("Linear fusion requires this vehicle's local certificate.")
+            return LinearFusion(ego_source_id=self.name,
+                                gate_ratio=config.get("gate_ratio", 1.0),
+                                cap=config.get("cap"))
+        if config["type"] == "linear_fusion_cross":
+            from intelligent_vehicles.fusion.linear_fusion_cross import LinearFusionCross
+
+            if self.certificate is None:
+                raise ValueError("Linear fusion requires this vehicle's local certificate.")
+            return LinearFusionCross(ego_source_id=self.name,
+                                     gate_ratio=config.get("gate_ratio", 1.0))
         raise ValueError(f"Unsupported fusion type: {config['type']}")
 
     @staticmethod
@@ -132,7 +147,8 @@ class AggregatingIV(BasicIV):
     def _apply_gates(self, pools, tracklets):
         """Gate local and shared-only nodes independently, preserving map order."""
         local = {node_id: values for node_id, values in pools.items() if values[3] == 1}
-        shared = {node_id: values for node_id, values in pools.items() if values[3] == 2}
+        shared = {node_id: values for node_id, values in pools.items() if values[3] == 2} \
+                 if getattr(self, "category_s_enabled", True) else {}
         if self.kf_gate is not None:
             local = self.kf_gate.apply(local, tracklets)
         if self.consensus_gate is not None:
@@ -141,21 +157,27 @@ class AggregatingIV(BasicIV):
         return {node_id: selected[node_id] for node_id in pools if node_id in selected}
 
     def fuse_pools(self, ego_ts, pools):
-        """Fuse already-gated pools without modifying gates or the prediction map."""
-        local_fuser = self.fusers["category_l"]
-        shared_fuser = self.fusers["category_s"]
-        if local_fuser is shared_fuser:
-            return local_fuser.fuse(ego_ts, pools)
-
-        local = {node_id: values for node_id, values in pools.items() if values[3] == 1}
-        shared = {node_id: values for node_id, values in pools.items() if values[3] == 2}
-        if isinstance(local_fuser, LinearFusion):
-            fused = local_fuser.fuse(
-                ego_ts, local, node_categories=self.prediction_map.extract_categories(),
-            )
-        else:
-            fused = local_fuser.fuse(ego_ts, local)
-        fused.update(shared_fuser.fuse(ego_ts, shared))
+        """Time complete category batches, including worker dispatch and wait."""
+        fused = {}
+        self._fusion_runtime = {}
+        for category, node_type in (("category_l", 1), ("category_s", 2)):
+            selected = {node_id: values for node_id, values in pools.items()
+                        if values[3] == node_type}
+            fuser = self.fusers[category]
+            if fuser is None:
+                self._fusion_runtime[category] = {
+                    "fusion_ms": 0.0, "candidate_nodes": 0, "fused_nodes": 0, "workers": 1,
+                }
+                continue
+            start = time.perf_counter()
+            outputs = fuser.fuse(ego_ts, selected)
+            self._fusion_runtime[category] = {
+                "fusion_ms": (time.perf_counter() - start) * 1000.0,
+                "candidate_nodes": sum(bool(values[2]) for values in selected.values()),
+                "fused_nodes": len(outputs),
+                "workers": getattr(fuser, "workers", 1),
+            }
+            fused.update(outputs)
         return {node_id: fused[node_id] for node_id in pools if node_id in fused}
 
     def run_predictor(self, tracklets, sim_time_s):
@@ -178,10 +200,12 @@ class AggregatingIV(BasicIV):
 
         # prediction-map update + pool extraction
         self.prediction_map.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
+        self._annotate_certificates(tracklets, pred_ts_ms)
         for topic, payload in arrived:
             self.update_prediction_map(topic, payload, pred_ts_ms, ego_ts)
         self.last_prediction_timestamp = pred_ts_ms
-        self.prediction_map.remove_unrefreshed_category_II_nodes()
+        if getattr(self, "category_s_enabled", True):
+            self.prediction_map.remove_unrefreshed_category_II_nodes()
         preds_with_pools = self.prediction_map.extract_pools()
 
         # Gates own filtering and their decision records.
@@ -200,21 +224,24 @@ class AggregatingIV(BasicIV):
 
         # post-fusion prediction-map operations
         self.prediction_map.update_predictions(fused_predictions)
-        predictions = self.prediction_map.extract_predictions()
+        predictions = self.prediction_map.extract_predictions(
+            category_II_nodes=getattr(self, "category_s_enabled", True),
+        )
         for prediction in predictions:
             prediction["ego_vehicle"] = self.name
             if prediction["id"] in fusion_inputs:
                 prediction["fusion_inputs"] = fusion_inputs[prediction["id"]]
-        self.prediction_map.advance_category_II_nodes()
+        if getattr(self, "category_s_enabled", True):
+            self.prediction_map.advance_category_II_nodes()
         self.prediction_map.empty_pools()
 
         collaborative_ms = (time.perf_counter() - collaborative_start) * 1000.0
 
-        self._record_runtime(individual_ms, collaborative_ms, fusion_ms, fused_nodes)
+        self._record_runtime(individual_ms, collaborative_ms, fusion_ms, fused_nodes, self._fusion_runtime)
         return predictions
 
-    def _record_runtime(self, individual_ms, collaborative_ms, fusion_ms, fused_nodes):
-        """Append one runtime row using the existing output schema."""
+    def _record_runtime(self, individual_ms, collaborative_ms, fusion_ms, fused_nodes, category_runtime):
+        """Append measured category costs and candidate/output counts per frame."""
         write_header = not self.runtime_path.exists() or self.runtime_path.stat().st_size == 0
         if not self._runtime_header_checked and not write_header:
             with self.runtime_path.open() as file:
@@ -226,9 +253,13 @@ class AggregatingIV(BasicIV):
         with self.runtime_path.open("a") as file:
             if write_header:
                 file.write(_RUNTIME_HEADER)
-            workers = max(getattr(fuser, "workers", 1) for fuser in self.fusers.values())
+            workers = max(values["workers"] for values in category_runtime.values())
+            category_fields = ",".join(
+                f"{values['fusion_ms']:.3f},{values['candidate_nodes']},{values['fused_nodes']},{values['workers']}"
+                for values in (category_runtime["category_l"], category_runtime["category_s"])
+            )
             file.write(f"{individual_ms:.3f},{collaborative_ms:.3f},{fusion_ms:.3f},"
-                       f"{fused_nodes},{workers}\n")
+                       f"{fused_nodes},{workers},{category_fields}\n")
         self._runtime_header_checked = True
 
     def update_prediction_map(self, topic, payload, ego_timestamp_ms, ego_timestamps):
@@ -266,6 +297,8 @@ class AggregatingIV(BasicIV):
                     node_type = (self.prediction_map.G.nodes[node_id]["node_data"].type
                                  if node_id is not None else 2)
                     category = "category_l" if node_type == 1 else "category_s"
+                    if category == "category_s" and not getattr(self, "category_s_enabled", True):
+                        continue
                     aligned = self.aligners[category].align([prediction], ego_timestamps)
                     if not aligned:
                         continue
@@ -278,7 +311,7 @@ class AggregatingIV(BasicIV):
                 self.prediction_map.update_pools(retained_matches, retained)
                 print(f"[{self.name}] processed remote packet: total {len(retained)}, associated {len(retained_matches)}")
 
-                if self.cur_location:
+                if self.cur_location and getattr(self, "category_s_enabled", True):
                     added_ids = self.prediction_map.add_new_objects(self.cur_location, unmatched, retained)
                     print(f"Total added nodes of category II: {len(added_ids)}")
             else:

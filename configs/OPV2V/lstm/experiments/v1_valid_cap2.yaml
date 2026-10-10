@@ -1,6 +1,5 @@
-# OPV2V valid: vehicle_1 aggregates with LSTM; vehicle_2 shares with GAN.
-# Category L: linear fusion with certificate confidence gate; Category S: vector GP.
-# Alignment on; KF, consensus and GT calibration off.
+# Original gate, then clip to a 2 m cone through the first second.
+# All other settings match v1_valid.yaml.
 dataset:
   name: OPV2V
   path: preprocess/preprocessed/OPV2V
@@ -21,8 +20,8 @@ vehicles:
       name: metric_association
     predictor:
       layout: track
-      checkpoint: ../TrajZoo/trajzoo-code/checkpoints/opv2v/bivariate/lstm_bivariate_relative_k1_opv2v/best.pth
-      calibration_certificate: outputs/calibration/lstm_bootstrap_certificate.json
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
     listener:
       topic: pred
       drop: false
@@ -34,6 +33,9 @@ vehicles:
         type: none
       fusion:
         type: linear_fusion
+        cap:
+          radius_m: 2.0
+          horizon_s: 1.0
     category_s:
       alignment:
         align: true
@@ -58,8 +60,8 @@ vehicles:
       name: metric_association
     predictor:
       layout: track
-      checkpoint: ../TrajZoo/trajzoo-code/checkpoints/opv2v/bivariate/gan_bivariate_relative_k1/best.pth
-      calibration_certificate: outputs/calibration/gan_bootstrap_certificate.json
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
     sensors:
     - lidar01
     broadcaster:

@@ -1,7 +1,8 @@
 """Estimate raw error second moments with trajectory bootstrap uncertainty.
 
-Fit-only covariance-trace bins group each category and forecast horizon. Whole
-trajectories are resampled together so every horizon shares the same draw. The
+Fit-only covariance-trace bins or fixed predicted-motion tags group each category
+and forecast horizon. Whole trajectories are resampled together so every group
+and horizon shares the same draw within its category. The
 spectral-norm radius has approximate per-group confidence; it does not establish
 conditional coverage, simultaneous confidence, or transfer to deployment data.
 
@@ -9,6 +10,8 @@ All estimation and validation use CPU NumPy and do not read or write files.
 """
 
 import numpy as np
+
+from .motion import MOTION_TAGS
 
 
 BOOTSTRAP_DRAWS = 2000
@@ -18,7 +21,7 @@ SEED = 42
 CONFIDENCE = 0.95
 
 
-# The same covariance symmetry policy as LinearFusionGatePerStep.
+# Shared covariance symmetry tolerances for fitting and runtime lookup.
 SYMMETRY_ATOL = 1e-12
 SYMMETRY_RTOL = 1e-10
 
@@ -146,8 +149,8 @@ def _category_design(category, errors, traces, valid, sample_fps, min_rows):
     return profiles, design
 
 
-def _bootstrap_category(profiles, design, rng, draws, confidence):
-    usable = [item for row in profiles for item in row["bins"] if item["usable_for_gate"]]
+def _bootstrap_items(usable, design, rng, draws, confidence):
+    """Resample all group/horizon sums using the same whole-trajectory draw."""
     if not usable:
         return
     moments = np.array([item["M_hat"] for item in usable])
@@ -159,7 +162,7 @@ def _bootstrap_category(profiles, design, rng, draws, confidence):
         weights = rng.multinomial(count, probabilities, size=stop - start).astype(float)
         totals = (weights @ design).reshape(stop - start, len(usable), 4)
         if np.any(totals[..., 0] == 0):
-            raise ValueError("A bootstrap resample has an empty usable bin; no certificate was saved.")
+            raise ValueError("A bootstrap resample has an empty usable group; no certificate was saved.")
         values = totals[..., 1:] / totals[..., :1]
         matrices = np.empty(values.shape[:-1] + (2, 2))
         matrices[..., 0, 0], matrices[..., 0, 1] = values[..., 0], values[..., 1]
@@ -170,18 +173,27 @@ def _bootstrap_category(profiles, design, rng, draws, confidence):
         item["status"] = "approximate_group_moment"
 
 
-def estimate_bootstrap_profiles(means, targets, covariances, categories, sample_fps,
-                                *, draws=BOOTSTRAP_DRAWS, seed=SEED,
-                                min_rows=MIN_VALID_ROWS, confidence=CONFIDENCE):
-    """Fit using only the supplied calibration rows, preserving temporal dependence."""
-    means, targets, covariances, categories, sample_fps = _validate_dataset(
-        means, targets, covariances, categories, sample_fps)
+def _bootstrap_category(profiles, design, rng, draws, confidence):
+    usable = [item for row in profiles for item in row["bins"] if item["usable_for_gate"]]
+    _bootstrap_items(usable, design, rng, draws, confidence)
+
+
+def _validate_bootstrap_settings(draws, seed, min_rows, confidence):
     for name, value in (("draws", draws), ("seed", seed), ("min_rows", min_rows)):
         minimum = 0 if name == "seed" else 1
         if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < minimum:
             raise ValueError(f"{name} must be an integer >= {minimum}.")
     if isinstance(confidence, bool) or not np.isfinite(confidence) or not 0 < confidence < 1:
         raise ValueError("confidence must be between zero and one.")
+
+
+def estimate_bootstrap_profiles(means, targets, covariances, categories, sample_fps,
+                                *, draws=BOOTSTRAP_DRAWS, seed=SEED,
+                                min_rows=MIN_VALID_ROWS, confidence=CONFIDENCE):
+    """Fit using only the supplied calibration rows, preserving temporal dependence."""
+    means, targets, covariances, categories, sample_fps = _validate_dataset(
+        means, targets, covariances, categories, sample_fps)
+    _validate_bootstrap_settings(draws, seed, min_rows, confidence)
     rng = np.random.default_rng(seed)
     profiles, exclusions = [], {}
     for category in sorted(set(categories)):
@@ -196,20 +208,54 @@ def estimate_bootstrap_profiles(means, targets, covariances, categories, sample_
     return profiles, exclusions
 
 
-def _validate_frozen_bin(item):
-    count = item.get("n_fit")
-    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-        raise ValueError("Frozen bin n_fit must be a nonnegative integer.")
-    usable = item.get("status") == "approximate_group_moment"
-    moment, radius = item.get("M_hat"), item.get("radius")
-    if usable:
-        matrix = np.asarray(moment, dtype=float)
-        if (count < MIN_VALID_ROWS or matrix.shape != (2, 2) or not np.isfinite(matrix).all()
-                or not np.allclose(matrix, matrix.T, rtol=1e-10, atol=1e-12)
-                or np.linalg.eigvalsh(matrix).min() < -1e-12):
-            raise ValueError("Frozen usable bin requires sufficient rows and a finite PSD moment.")
-        if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not np.isfinite(radius) or radius < 0:
-            raise ValueError("Frozen usable bin radius must be finite and nonnegative.")
-    return {"uncertainty_bin": item["uncertainty_bin"], "n_valid": count,
-            "usable_for_gate": usable, "M_hat": moment if usable else None,
-            "radius": radius if usable else None, "status": item["status"]}
+def estimate_motion_profiles(means, targets, covariances, categories, motion_tags, sample_fps,
+                             *, draws=BOOTSTRAP_DRAWS, seed=SEED,
+                             min_rows=MIN_VALID_ROWS, confidence=CONFIDENCE):
+    """Fit direct expected-error risk bounds per category, motion and native step."""
+    means, targets, covariances, categories, sample_fps = _validate_dataset(
+        means, targets, covariances, categories, sample_fps)
+    _validate_bootstrap_settings(draws, seed, min_rows, confidence)
+    motion_tags = np.asarray(motion_tags, dtype=object)
+    if motion_tags.shape != (len(means),) or any(
+            tag is not None and tag not in MOTION_TAGS for tag in motion_tags):
+        raise ValueError("motion_tags must contain one known tag or None per trajectory.")
+    rng = np.random.default_rng(seed)
+    profiles, exclusions = [], {}
+    for category in sorted(set(categories)):
+        selected = categories == category
+        tags = motion_tags[selected]
+        errors, _, valid, exclusions[category] = _valid_category_points(
+            means[selected], targets[selected], covariances[selected])
+        exclusions[category]["unavailable_motion_trajectories"] = int(sum(tag is None for tag in tags))
+        category_profiles, features = [], []
+        for tag in MOTION_TAGS:
+            for step in range(means.shape[1]):
+                mask = valid[:, step] & (tags == tag)
+                count = int(mask.sum())
+                usable = count >= min_rows
+                error = errors[mask, step]
+                moment = error.T @ error / count if usable else None
+                category_profiles.append({
+                    "category": category, "motion_tag": tag, "horizon_step": step + 1,
+                    "horizon_seconds": (step + 1) / sample_fps, "n_valid": count,
+                    "usable_for_gate": usable, "M_hat": moment.tolist() if usable else None,
+                    "radius": None, "lower": None, "upper": None,
+                    "status": "pending" if usable else "insufficient_fit_samples",
+                })
+                if usable:
+                    feature = np.zeros((len(errors), 4))
+                    feature[mask] = np.column_stack((np.ones(count), error[:, 0] ** 2,
+                                                     error[:, 0] * error[:, 1], error[:, 1] ** 2))
+                    features.append(feature)
+        usable = [item for item in category_profiles if item["usable_for_gate"]]
+        design = np.concatenate(features, axis=1) if features else None
+        _bootstrap_items(usable, design, rng, draws, confidence)
+        for item in usable:
+            trace = float(np.trace(item["M_hat"]))
+            item["lower"] = max(0., trace - 2 * item["radius"])
+            item["upper"] = trace + 2 * item["radius"]
+        profiles.extend(category_profiles)
+        print(f"Motion bootstrap fitted: {category}, {int(selected.sum())} trajectories", flush=True)
+    return profiles, exclusions
+
+

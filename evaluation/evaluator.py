@@ -34,23 +34,23 @@ INPUT_UNCERTAINTY_METRICS = (
 
 
 def _runtime_summary(runtime_dir=None):
-    """Read per-vehicle runtimes, averaging fusion only over active frames."""
+    """Average fusion costs over frames with sharing candidates, per category."""
     runtime_dir = Path(RUNTIME_TMP_DIR if runtime_dir is None else runtime_dir)
     summaries = {}
-    required = {"individual_ms", "collaborative_ms"}
-    fusion_columns = {"fusion_ms", "fused_nodes", "fusion_workers"}
+    categories = ("category_l", "category_s")
+    required = {"individual_ms", "collaborative_ms", "fusion_ms", "fused_nodes", "fusion_workers"}
+    required.update(f"{category}_{field}" for category in categories
+                    for field in ("ms", "candidates", "fused_nodes", "workers"))
     for path in sorted(runtime_dir.glob("*.csv")):
-        frames = active_frames = active_nodes = 0
-        individual_sum = collaborative_sum = fusion_sum = 0.0
-        workers = set()
+        frames = 0
+        individual_sum = collaborative_sum = 0.0
+        fusion = {category: {"ms": 0.0, "active": 0, "candidates": 0, "fused": 0, "workers": set()}
+                  for category in ("overall", *categories)}
         with path.open(newline="") as stream:
             reader = csv.DictReader(stream)
             columns = set(reader.fieldnames or ())
             if columns and not required.issubset(columns):
                 raise ValueError(f"Missing runtime columns in {path}")
-            if columns & fusion_columns and not fusion_columns.issubset(columns):
-                raise ValueError(f"Incomplete fusion runtime columns in {path}")
-            has_fusion = fusion_columns.issubset(columns)
             for row in reader:
                 if None in row or any(value is None for value in row.values()):
                     raise ValueError(f"Runtime row does not match its header in {path}")
@@ -61,25 +61,44 @@ def _runtime_summary(runtime_dir=None):
                 frames += 1
                 individual_sum += individual
                 collaborative_sum += collaborative
-                if has_fusion:
-                    fusion = float(row["fusion_ms"])
-                    nodes = int(row["fused_nodes"])
-                    worker_count = int(row["fusion_workers"])
-                    if not math.isfinite(fusion) or fusion < 0 or nodes < 0 or worker_count < 1:
+                measurements = {
+                    category: (float(row[f"{category}_ms"]), int(row[f"{category}_candidates"]),
+                               int(row[f"{category}_fused_nodes"]), int(row[f"{category}_workers"]))
+                    for category in categories
+                }
+                nodes = int(row["fused_nodes"])
+                if nodes != sum(values[2] for values in measurements.values()):
+                    raise ValueError(f"Category output counts do not match fused_nodes in {path}")
+                measurements["overall"] = (
+                    float(row["fusion_ms"]), sum(values[1] for values in measurements.values()),
+                    nodes, int(row["fusion_workers"]),
+                )
+                for category, (duration, candidates, outputs, workers) in measurements.items():
+                    if (not math.isfinite(duration) or duration < 0 or candidates < 0
+                            or outputs < 0 or outputs > candidates or workers < 1):
                         raise ValueError(f"Invalid fusion runtime values in {path}")
-                    workers.add(worker_count)
-                    if nodes > 0:
-                        active_frames += 1
-                        active_nodes += nodes
-                        fusion_sum += fusion
+                    totals = fusion[category]
+                    totals["workers"].add(workers)
+                    if candidates > 0:
+                        totals["active"] += 1
+                        totals["candidates"] += candidates
+                        totals["fused"] += outputs
+                        totals["ms"] += duration
+        breakdown = {
+            category: {
+                "fusion_mean_ms": totals["ms"] / totals["active"] if totals["active"] else None,
+                "active_fusion_frames": totals["active"],
+                "mean_candidate_nodes_active": totals["candidates"] / totals["active"] if totals["active"] else None,
+                "mean_fused_nodes_active": totals["fused"] / totals["active"] if totals["active"] else None,
+                "fusion_workers": sorted(totals["workers"]),
+            } for category, totals in fusion.items()
+        }
         summaries[path.stem] = {
             "frames": frames,
             "predictor_mean_ms": individual_sum / frames if frames else None,
             "collaborative_mean_ms": collaborative_sum / frames if frames else None,
-            "fusion_mean_ms": fusion_sum / active_frames if active_frames else None,
-            "active_fusion_frames": active_frames if has_fusion else None,
-            "mean_fused_nodes_active": active_nodes / active_frames if active_frames else None,
-            "fusion_workers": sorted(workers),
+            **breakdown.pop("overall"),
+            "by_category": breakdown,
         }
     return summaries
 
@@ -303,6 +322,7 @@ class Evaluator:
 
         self._scenario_name = None
         self._scenario = None
+        self._scenario_by_source = None
         self._certified_nodes = {}
         if self.output_dir == OUTPUTS_DIR and self.generate_plots:
             # The legacy caller relies on construction starting a fresh run.
@@ -319,6 +339,7 @@ class Evaluator:
             raise RuntimeError("The previous scenario has not been ended.")
         self._scenario_name = str(scenario_name)
         self._scenario = self._make_totals()
+        self._scenario_by_source = {name: self._make_totals() for name in self.SOURCE_NAMES}
         self._certified_nodes = {}
 
     def _sequence_to_array(self, sequence, max_steps, reverse=False):
@@ -644,20 +665,20 @@ class Evaluator:
         }
         for source in available_sources:
             matched_count = matched_by_source[source]
-            totals = self.by_source[source]
-            totals["frames_seen"] += 1
-            if matched_count:
-                totals["frames_with_matches"] += 1
-            self._add_counts(
-                totals,
-                num_gt=len(ground_truth),
-                num_matched=matched_count,
-                num_missed=len(ground_truth) - matched_count,
-                num_raw_unmatched=raw_unmatched_by_source[source],
-                num_fp=false_by_source[source],
-                num_certified_retained_unmatched=retained_by_source[source],
-                num_stale_matched=stale_by_source[source],
-            )
+            for totals in (self.by_source[source], self._scenario_by_source[source]):
+                totals["frames_seen"] += 1
+                if matched_count:
+                    totals["frames_with_matches"] += 1
+                self._add_counts(
+                    totals,
+                    num_gt=len(ground_truth),
+                    num_matched=matched_count,
+                    num_missed=len(ground_truth) - matched_count,
+                    num_raw_unmatched=raw_unmatched_by_source[source],
+                    num_fp=false_by_source[source],
+                    num_certified_retained_unmatched=retained_by_source[source],
+                    num_stale_matched=stale_by_source[source],
+                )
 
         self.overall["frames_seen"] += 1
         self._scenario["frames_seen"] += 1
@@ -749,6 +770,7 @@ class Evaluator:
                 )
                 if source_values is not None:
                     self._add_forecast(self.by_source[source], source_values)
+                    self._add_forecast(self._scenario_by_source[source], source_values)
                     if source in ("category_I_ego", "no_fusion"):
                         vehicle = prediction.get("ego_vehicle", self.vehicle_label or "ego")
                         self._add_forecast(self.input_calibration_totals[(vehicle, "ego")], source_values)
@@ -872,6 +894,7 @@ class Evaluator:
             raise RuntimeError("No active scenario to end.")
         scenario_summary = _summary(self._scenario)
         scenario_summary["scenario"] = self._scenario_name
+        scenario_summary.update(self._fusion_summary(self._scenario, self._scenario_by_source))
         self.scenarios.append(scenario_summary)
 
         print(
@@ -881,15 +904,16 @@ class Evaluator:
         )
 
         self._scenario = None
+        self._scenario_by_source = None
         self._scenario_name = None
         return scenario_summary
 
-    def _ego_observed_summary(self, category_i_source):
+    @staticmethod
+    def _ego_observed_summary(category_i_source, by_source, num_gt):
         """Pool disjoint forecast groups; count the shared GT denominator once."""
-        groups = (self.by_source[category_i_source], self.by_source["no_fusion"])
+        groups = (by_source[category_i_source], by_source["no_fusion"])
         # Both stages use the same associations; prediction errors alone change.
-        associations = (self.by_source["category_I_ego"], self.by_source["no_fusion"])
-        num_gt = self.overall["num_gt"]
+        associations = (by_source["category_I_ego"], by_source["no_fusion"])
         matched = sum(group["num_matched"] for group in associations)
         false_positives = sum(group["num_false_positives"] for group in associations)
         result = {
@@ -913,6 +937,22 @@ class Evaluator:
             result[metric] = _safe_ratio(result[key], num_gt)
         return result
 
+    def _fusion_summary(self, overall, by_source):
+        """Use the same comparison and denominators for a scenario or full run."""
+        before = self._ego_observed_summary("category_I_ego", by_source, overall["num_gt"])
+        after = self._ego_observed_summary("category_I_fused", by_source, overall["num_gt"])
+        sources = {source: _summary(totals) for source, totals in by_source.items()}
+        return {
+            "ego_observed_before": before,
+            "ego_observed_after": after,
+            "by_source": sources,
+            "fusion_gains": {
+                "ego_observed": _distance_gains(before, after),
+                "category_I": _distance_gains(sources["category_I_ego"], sources["category_I_fused"]),
+            },
+            "ego_observed_pairing": "Common capped forecast timestamps checked per matched Category I object.",
+        }
+
     def evaluate(self, *, gt_control=None, print_results=True):
         if self._scenario is not None:
             raise RuntimeError("end_scenario() must be called before evaluate().")
@@ -921,15 +961,10 @@ class Evaluator:
             "vehicle_label": self.vehicle_label,
             "metadata": self._metadata(),
             "overall": _summary(self.overall),
-            "ego_observed_before": self._ego_observed_summary("category_I_ego"),
-            "ego_observed_after": self._ego_observed_summary("category_I_fused"),
+            **self._fusion_summary(self.overall, self.by_source),
             "by_category": {
                 category: _summary(totals)
                 for category, totals in sorted(self.by_category.items())
-            },
-            "by_source": {
-                source: _summary(totals)
-                for source, totals in self.by_source.items()
             },
             "scenarios": list(self.scenarios),
             "distributions": {
@@ -940,11 +975,6 @@ class Evaluator:
         # Compatibility with the former after-fusion distance-only field.
         results["ego_observed"] = {key: results["ego_observed_after"][key]
                                    for key in ("ADE", "FDE", "MSE_2D", "ade_count", "fde_count", "mse_2d_count")}
-        results["fusion_gains"] = {
-            "ego_observed": _distance_gains(results["ego_observed_before"], results["ego_observed_after"]),
-            "category_I": _distance_gains(results["by_source"]["category_I_ego"], results["by_source"]["category_I_fused"]),
-        }
-        results["ego_observed_pairing"] = "Common capped forecast timestamps checked per matched Category I object."
         plots = {}
         calibration_plot = None
         if self.generate_plots:
@@ -1120,5 +1150,5 @@ class Evaluator:
                       f"{active if active is not None else 'n/a':>13} "
                       f"{self._metric(values['mean_fused_nodes_active']):>12}")
             print("Predictor/collaborative: all frames; collaborative includes ego prediction plus collaboration.")
-            print("Fusion: active frames only; startup and dispatch/wait included, no warmup removed.")
-            print("Original pass only; GT-control replay excluded. Nodes/active is the mean fused-node count per active frame.")
+            print("Fusion: active frames contain sharing candidates; startup and dispatch/wait included.")
+            print("Original pass only; GT-control replay excluded. Nodes/active counts fusion outputs.")

@@ -17,6 +17,8 @@ from intelligent_vehicles.detectors.initialize import initialize_detector
 from intelligent_vehicles.trackers.initialize import initialize_tracker
 from intelligent_vehicles.predictors.initialize import initialize_predictor
 from intelligent_vehicles.objectstore import initialize_prediction_map
+from calibration.motion import classify_motion
+from calibration.runtime import Certificate
 
 
 class BasicIV:
@@ -46,6 +48,25 @@ class BasicIV:
     def _init_predictor(self, predictor_config):
         print(f"Initializing predictor with config: {predictor_config}")
         self.predictor = initialize_predictor(predictor_config)
+
+    def _init_certificate(self, predictor_config):
+        path = predictor_config.get("calibration_certificate")
+        self.certificate = None
+        if path is None:
+            return
+        expected = {
+            "layout": predictor_config["layout"],
+            "obs_len": self.observed_past, "pred_len": self.prediction_horizon,
+            "sample_fps": self.fps,
+            "mode_selection": "runtime_output_index_0",
+            "alignment_policy": "native_forecast_timestamps",
+            "coordinate_frame": "world", "coordinate_units": "meters",
+            "coordinate_convention": "waymo_v1", "common_coordinates": True,
+            "coordinate_transform_version": 1,
+        }
+        self.certificate = Certificate.from_file(
+            path, checkpoint_path=predictor_config["checkpoint"], expected=expected,
+        )
         
     def _init_prediction_map(self):
         print("Initializing prediction map")
@@ -71,8 +92,42 @@ class BasicIV:
         past_trajs = self.predictor.format_input(tracklets)       
         mean_trajs, cov_trajs = self.predictor.predict(past_trajs)
         self.prediction_map.update_by_predictor(tracklets, mean_trajs, cov_trajs, pred_ts_ms)
+        self._annotate_certificates(tracklets, pred_ts_ms)
         predictions = self.prediction_map.extract_predictions()
         return predictions
+
+    def _annotate_certificates(self, tracklets, pred_ts_ms):
+        """Select bounds once on fresh native forecasts, using predictor history."""
+        if self.certificate is None:
+            return
+        histories = {
+            tracklet["id"]: [[float(record.x), float(record.y)]
+                             for record in tracklet["tracklet"][-self.observed_past:]]
+            for tracklet in tracklets
+        }
+        for prediction in self.prediction_map.extract_predictions(category_II_nodes=False):
+            if prediction["timestamp"] != pred_ts_ms:
+                continue
+            forecast = prediction["prediction"]
+            timestamps = sorted(forecast["pred"])
+            motion_tag = None
+            if self.certificate.method == "motion_bootstrap_raw_moment":
+                motion_tag = classify_motion(
+                    histories[prediction["id"]],
+                    [forecast["pred"][t] for t in timestamps],
+                    self.observed_past,
+                )
+            selected = self.certificate.trajectory_bounds(
+                prediction["category"],
+                [int(round(float(t) * 1000.0)) for t in timestamps],
+                [forecast["cov"][t] for t in timestamps],
+                motion_tag=motion_tag,
+            )
+            forecast.update(
+                bounds=dict(zip(timestamps, selected)), motion_tag=motion_tag,
+                risk_unit="m2", certificate_id=self.certificate.certificate_id,
+                certificate_method=self.certificate.method,
+            )
     
     def reset_time_steps(self):
         self.starting_time = 0.0  
@@ -86,20 +141,26 @@ class BasicIV:
     
     def ego_motion_compensation(self, detections, calibration):
         """
-        Convert LiDAR-frame boxes to world frame (position + yaw).
+        Convert detector-frame boxes to world frame (position + heading).
         """
     
         T_lw = np.array(calibration["ego_to_world"]) @ np.array(calibration["lidar_to_ego"])
+        if getattr(self.detector, "reflect_lidar_y", False):
+            T_lw = T_lw @ np.diag([1.0, -1.0, 1.0, 1.0])
         R_lw = T_lw[:3, :3]
-        ego_heading = np.arctan2(R_lw[1, 0], R_lw[0, 0])   
+        max_distance_m = getattr(self.detector, "max_distance_m", None)
+        ego_xy = np.asarray(calibration["ego_to_world"])[:2, 3]
 
         compensated = []
         for det in detections:
             pos_lidar = np.array([det["x"], det["y"], det["z"], 1.0])
             pos_world = T_lw @ pos_lidar
+            if (max_distance_m is not None
+                    and np.linalg.norm(pos_world[:2] - ego_xy) > max_distance_m + 1e-6):
+                continue
     
-            yaw_world = det["yaw"] + ego_heading
-            yaw_world = (yaw_world + np.pi) % (2 * np.pi) - np.pi   # wrap yaw to (-π,π]
+            heading_world = R_lw @ np.array([np.cos(det["yaw"]), np.sin(det["yaw"]), 0.0])
+            yaw_world = np.arctan2(heading_world[1], heading_world[0])
     
             new_det = det.copy()
             new_det["x"], new_det["y"], new_det["z"] = pos_world[:3]
@@ -143,6 +204,7 @@ class BasicIV:
         detector_config["device"] = self.device
         predictor_config["device"] = self.device
         tracker_config["tracking_history"] = self.tracking_buffer
+        tracker_config["observed_past"] = self.observed_past
         tracker_config["fps"] = self.fps
         predictor_config["observed_past"] = self.observed_past
         predictor_config["prediction_horizon"] = self.prediction_horizon
@@ -150,6 +212,7 @@ class BasicIV:
         
         # intialize predictor         
         self._init_predictor(predictor_config)
+        self._init_certificate(predictor_config)
         self.prediction_sampling = self.fps
         self.obs_period  = 1.0 / self.fps
         self.pred_period = 1.0 / self.fps

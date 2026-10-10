@@ -11,13 +11,18 @@ import zmq.asyncio as azmq
 import zstandard as zstd
 
 from evaluation.paths import DELAY_TMP_DIR
+from intelligent_vehicles.prediction_codec import (
+    COVARIANCE_SCALE, PACKET_SCHEMA_VERSION, POSITION_QUANTIZATION_VARIANCE,
+    POSITION_SCALE, RISK_UNIT, decode_covariances, validate_bound_pair,
+)
+from calibration.motion import MOTION_TAGS
 
 
 
 class Listener:
-    POSITION_SCALE = 100.0
-    COVARIANCE_SCALE = 4096.0
-    POSITION_QUANTIZATION_VARIANCE = 2.0 * ((1.0 / POSITION_SCALE) ** 2 / 12.0)
+    POSITION_SCALE = POSITION_SCALE
+    COVARIANCE_SCALE = COVARIANCE_SCALE
+    POSITION_QUANTIZATION_VARIANCE = POSITION_QUANTIZATION_VARIANCE
 
     """
     Unified strategy:
@@ -89,13 +94,25 @@ class Listener:
     @staticmethod
     def _expand_entry(entry):
         loc = [v / Listener.POSITION_SCALE for v in entry["b"]]
+        if len(loc) < 2 or not np.isfinite(loc).all():
+            raise ValueError("Current location must contain finite XY coordinates.")
         bx, by = loc[0], loc[1]
+        if any(isinstance(entry[key], bool) or not isinstance(entry[key], int)
+               for key in ("n", "t0", "dt", "tt")):
+            raise ValueError("Prediction time fields must be integers.")
         n = int(entry["n"])
         t0_ms = int(entry["t0"])
         dt_ms = int(entry["dt"])
-        if n <= 0 or dt_ms < 0 or (n > 1 and dt_ms == 0):
+        if n <= 0 or t0_ms <= 0 or dt_ms < 0 or (n > 1 and dt_ms == 0):
             raise ValueError("Invalid compact prediction time fields.")
-        t_s = ((t0_ms + np.arange(n, dtype=np.int64) * dt_ms) / 1000.0).tolist()
+        native_horizons = (t0_ms + np.arange(n, dtype=np.int64) * dt_ms).tolist()
+        t_s = [horizon / 1000.0 for horizon in native_horizons]
+        if not isinstance(entry["B"], list) or len(entry["B"]) != n:
+            raise ValueError("Calibration bound count does not match prediction count.")
+        bounds = [validate_bound_pair(pair) for pair in entry["B"]]
+        motion_tag = entry["motion_tag"]
+        if motion_tag is not None and motion_tag not in MOTION_TAGS:
+            raise ValueError("Unknown native forecast motion tag.")
 
         position_values = np.frombuffer(entry["P"], dtype="<i2")
         if position_values.size != 2 * n:
@@ -105,23 +122,7 @@ class Listener:
         offsets += np.asarray([bx, by])
         xy = offsets.tolist()
 
-        covariance_values = np.frombuffer(entry["V"], dtype="<i2")
-        if covariance_values.size != 3 * n:
-            raise ValueError("Packed covariance count does not match prediction count.")
-        transformed = covariance_values.reshape(n, 3).astype(np.float64)
-        transformed /= Listener.COVARIANCE_SCALE
-
-        std_x = np.exp(transformed[:, 0])
-        std_y = np.exp(transformed[:, 1])
-        correlation = np.tanh(transformed[:, 2])
-        variance_x = std_x ** 2 + Listener.POSITION_QUANTIZATION_VARIANCE
-        variance_y = std_y ** 2 + Listener.POSITION_QUANTIZATION_VARIANCE
-        covariance_xy = correlation * std_x * std_y
-        cov = np.empty((n, 2, 2), dtype=np.float64)
-        cov[:, 0, 0] = variance_x
-        cov[:, 0, 1] = covariance_xy
-        cov[:, 1, 0] = covariance_xy
-        cov[:, 1, 1] = variance_y
+        cov = decode_covariances(entry["V"], n)
         pred_ts_ms = int(entry["tt"])
 
         return {
@@ -132,14 +133,49 @@ class Listener:
             "prediction": {
                 "t": t_s,
                 "xy": xy,
-                "cov": cov.tolist()
+                "cov": cov.tolist(),
+                "bounds": bounds,
+                "motion_tag": motion_tag,
+                "risk_unit": RISK_UNIT,
+                "forecast_origin_ms": pred_ts_ms,
+                "native_horizon_ms": native_horizons,
+                "native_point_mask": [True] * n,
             },
         }
 
     @staticmethod
     def _expand_packet(pkt):
+        if (not isinstance(pkt, dict) or type(pkt.get("schema_version")) is not int
+                or pkt["schema_version"] != PACKET_SCHEMA_VERSION):
+            raise ValueError("Unsupported prediction packet schema_version.")
+        if pkt.get("risk_unit") != RISK_UNIT:
+            raise ValueError("Prediction packet requires squared-error risk bounds in m2.")
+        certificate_id, method = pkt["certificate_id"], pkt["method"]
+        if not ((certificate_id is None and method is None)
+                or (isinstance(certificate_id, str) and certificate_id.strip()
+                    and isinstance(method, str) and method.strip())):
+            raise ValueError("Certificate identity and method must be supplied together.")
         ego = pkt["ego"]
+        if len(ego) != 4 or not np.isfinite(ego).all():
+            raise ValueError("Ego pose must contain four finite values.")
+        predictions = [Listener._expand_entry(e) for e in pkt["pred"]]
+        if method == "motion_bootstrap_raw_moment" and any(
+                prediction["prediction"]["motion_tag"] is None
+                and any(bound is not None for bound in prediction["prediction"]["bounds"])
+                for prediction in predictions):
+            raise ValueError("Available motion bounds require a native motion tag.")
+        if method != "motion_bootstrap_raw_moment" and any(
+                prediction["prediction"]["motion_tag"] is not None for prediction in predictions):
+            raise ValueError("Only motion certificate predictions use motion tags.")
+        for prediction in predictions:
+            prediction["prediction"].update(
+                certificate_id=certificate_id, certificate_method=method, method=method,
+            )
         expanded = {
+            "schema_version": PACKET_SCHEMA_VERSION,
+            "risk_unit": RISK_UNIT,
+            "certificate_id": certificate_id,
+            "method": method,
             "sender": str(pkt["s"]),
             "timestamp_ms": int(pkt["ts"]),
             "fps": float(pkt["fps"]),
@@ -151,7 +187,7 @@ class Listener:
                 "z": float(ego[2]),
                 "yaw": float(ego[3]),
             },
-            "predictions": [Listener._expand_entry(e) for e in pkt["pred"]],
+            "predictions": predictions,
         }
         return expanded
 
@@ -202,6 +238,7 @@ class Listener:
 
                 if flag != b"z":
                     print(f"[Listener] unexpected flag={flag!r} (expected b'z')")
+                    continue
                 try:
                     raw = self._zd.decompress(data)
                 except Exception:
@@ -210,10 +247,7 @@ class Listener:
 
                 try:
                     pkt = msgpack.unpackb(raw, raw=False)
-                    if isinstance(pkt, dict) and "pred" in pkt and "s" in pkt:
-                        payload = self._expand_packet(pkt)
-                    else:
-                        payload = pkt
+                    payload = self._expand_packet(pkt)
                 except Exception:
                     print("[Listener] msgpack unpack/expand failed")
                     continue

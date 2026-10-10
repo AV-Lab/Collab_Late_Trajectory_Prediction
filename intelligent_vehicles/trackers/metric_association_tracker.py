@@ -48,6 +48,7 @@ class MetricAssociationTracker:
     def __init__(self, history_len, fps):
         print("Tracklets produced by GT-/CP detections + 6-state KF.")
         self.active_tracklets: List[MetricAssociationTracker.Track] = []
+        self.next_track_id = 0
         self.history_len = history_len
         self.fps = float(fps)
         self.dt = 1.0 / self.fps
@@ -220,10 +221,7 @@ class MetricAssociationTracker:
     def reset(self):
         self.active_tracklets.clear()
         self.prev_dets = []
-
-    def _find_track(self, det):
-        # kept here in case you still use obj_id somewhere else
-        return next((t for t in self.active_tracklets if t.id == det["obj_id"]), None)
+        self.next_track_id = 0
 
     def _create_track(self, det):
         tr = self.Track(
@@ -232,7 +230,9 @@ class MetricAssociationTracker:
             dt=self.dt,
             prev_dets=self.prev_dets,
             init_vel_max_dist=self.init_vel_max_dist,
+            track_id=self.next_track_id,
         )
+        self.next_track_id += 1
         self.active_tracklets.append(tr)
         return tr
 
@@ -246,10 +246,11 @@ class MetricAssociationTracker:
             dt: float = 0.1,
             prev_dets: Optional[List[dict]] = None,
             init_vel_max_dist: float = INITIAL_VELOCITY_MAX_DISTANCE,
+            track_id: Optional[int] = None,
         ):
             self.history  = Queue(maxsize=len_hist)
             self.category = det["label"]
-            self.id       = det["obj_id"]
+            self.id       = det["obj_id"] if track_id is None else track_id
 
             self.dx, self.dy, self.dz = det["dx"], det["dy"], det["dz"]
 

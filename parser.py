@@ -1,15 +1,12 @@
-import hashlib
-import json
 import math
 import os
-import numpy as np
 import yaml
 
 SUPPORTED_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
 SUPPORTED_DETECTORS = {"gt", "gt_occ", "centerpoint"}
 SUPPORTED_PREDICTOR_LAYOUTS = {"track", "scene"}
-SUPPORTED_TRACKERS = {"id_association", "metric_association"}
-SUPPORTED_FUSION_TYPES = {"gp", "gp_vector", "linear_fusion"}
+SUPPORTED_TRACKERS = {"gt", "id_association", "metric_association"}
+SUPPORTED_FUSION_TYPES = {"gp", "gp_vector", "linear_fusion", "linear_fusion_cross"}
 SPLITS = {"train", "valid", "test"}
 
 
@@ -54,7 +51,14 @@ def _validate_categories(vehicle_key, vehicle):
         path = f"{prefix}.{category}"
         if category not in vehicle:
             raise ValueError(f"{path}: required")
-        branch = _config_block(vehicle[category], path, {"alignment", "gate", "fusion"})
+        allowed = {"alignment", "gate", "fusion"}
+        if category == "category_s":
+            allowed.add("enabled")
+        branch = _config_block(vehicle[category], path, allowed)
+        if category == "category_s":
+            _config_bool(branch.get("enabled", True), path + ".enabled")
+            if not branch.get("enabled", True):
+                continue
 
         alignment = branch.setdefault("alignment", {})
         _config_block(alignment, path + ".alignment", {"align", "min_points"})
@@ -92,7 +96,8 @@ def _validate_categories(vehicle_key, vehicle):
         fusion_path = path + ".fusion"
         if "fusion" not in branch:
             raise ValueError(f"{fusion_path}: required")
-        fusion = _config_block(branch["fusion"], fusion_path, {"type", "workers"})
+        fusion = _config_block(branch["fusion"], fusion_path,
+                               {"type", "workers", "gate_ratio", "cap"})
         kind = fusion.get("type")
         supported = SUPPORTED_FUSION_TYPES if category == "category_l" else {"gp", "gp_vector"}
         if not isinstance(kind, str) or kind not in supported:
@@ -102,161 +107,22 @@ def _validate_categories(vehicle_key, vehicle):
             allowed.add("workers")
             fusion.setdefault("workers", 1)
             _config_number(fusion["workers"], fusion_path + ".workers", integer=True)
+        elif kind in ("linear_fusion", "linear_fusion_cross"):
+            allowed.add("gate_ratio")
+            if kind == "linear_fusion":
+                allowed.add("cap")
+            ratio = fusion.get("gate_ratio", 1.0)
+            _config_number(ratio, fusion_path + ".gate_ratio")
+            if ratio > 1:
+                raise ValueError(f"{fusion_path}.gate_ratio: must be at most 1")
+            if kind == "linear_fusion" and "cap" in fusion:
+                cap_path = fusion_path + ".cap"
+                cap = _config_block(fusion["cap"], cap_path, {"radius_m", "horizon_s"})
+                for name, default in (("radius_m", 2.0), ("horizon_s", 1.0)):
+                    cap.setdefault(name, default)
+                    _config_number(cap[name], cap_path + "." + name)
         _config_block(fusion, fusion_path, allowed)
 
-
-def _bootstrap_profile(profile, path):
-    """Validate and index one horizon's frozen uncertainty bins."""
-    cutpoints = profile.get("uncertainty_cutpoints")
-    if not isinstance(cutpoints, list):
-        raise ValueError(f"{path}.uncertainty_cutpoints: must be a list")
-    for index, value in enumerate(cutpoints):
-        _config_number(value, f"{path}.uncertainty_cutpoints[{index}]", inclusive=True)
-        if index and value <= cutpoints[index - 1]:
-            raise ValueError(f"{path}.uncertainty_cutpoints: must be strictly increasing")
-    bins = profile.get("bins")
-    if not isinstance(bins, list) or len(bins) != len(cutpoints) + 1:
-        raise ValueError(f"{path}.bins: requires one bin per interval")
-    indexed = []
-    for index, entry in enumerate(bins):
-        location = f"{path}.bins[{index}]"
-        if not isinstance(entry, dict):
-            raise ValueError(f"{location}: must be a dictionary")
-        bin_index = entry.get("uncertainty_bin")
-        _config_number(bin_index, location + ".uncertainty_bin", integer=True, inclusive=True)
-        if bin_index != index:
-            raise ValueError(f"{location}.uncertainty_bin: bins must be complete and ordered")
-        _config_number(entry.get("n_valid"), location + ".n_valid", integer=True, inclusive=True)
-        usable = entry.get("usable_for_gate")
-        _config_bool(usable, location + ".usable_for_gate")
-        if not usable:
-            if entry.get("M_hat") is not None or entry.get("radius") is not None:
-                raise ValueError(f"{location}: unavailable bins must have null moment and radius")
-            indexed.append(None)
-            continue
-        if entry["n_valid"] == 0:
-            raise ValueError(f"{location}.n_valid: usable bins require observations")
-        _config_number(entry.get("radius"), location + ".radius", inclusive=True)
-        raw = entry.get("M_hat")
-        if (not isinstance(raw, list) or len(raw) != 2
-                or any(not isinstance(row, list) or len(row) != 2 for row in raw)
-                or any(isinstance(v, bool) or not isinstance(v, (int, float))
-                       or not math.isfinite(v) for row in raw for v in row)):
-            raise ValueError(f"{location}.M_hat: must be a finite numeric 2x2 matrix")
-        moment = np.asarray(raw, dtype=np.float64)
-        tolerance = 1e-12 + 1e-10 * np.max(np.abs(moment))
-        if np.max(np.abs(moment - moment.T)) > tolerance:
-            raise ValueError(f"{location}.M_hat: must be symmetric")
-        moment = 0.5 * moment + 0.5 * moment.T
-        if np.linalg.eigvalsh(moment)[0] < -tolerance:
-            raise ValueError(f"{location}.M_hat: must be positive semidefinite")
-        indexed.append({"M_hat": moment.tolist(), "radius": float(entry["radius"])})
-    return {"method": "bootstrap_raw_moment", "cutpoints": cutpoints, "bins": indexed}
-
-
-def _certificate_profiles(certificate, path, inference):
-    """Index usable native-point bounds; missing profiles remain unavailable."""
-    if type(certificate.get("schema_version")) is not int or certificate["schema_version"] != 2:
-        raise ValueError(f"{path}: requires bootstrap certificate schema_version=2; regenerate legacy certificates")
-    if certificate.get("estimator") != "bootstrap_raw_moment":
-        raise ValueError(f"{path}.estimator: requires bootstrap_raw_moment")
-    profiles = certificate.get("profiles")
-    if not isinstance(profiles, list) or not profiles:
-        raise ValueError(f"{path}.profiles: must be a non-empty list")
-    indexed, seen = {}, set()
-    for index, profile in enumerate(profiles):
-        location = f"{path}.profiles[{index}]"
-        if not isinstance(profile, dict):
-            raise ValueError(f"{location}: must be a dictionary")
-        category = profile.get("category")
-        if not isinstance(category, str) or not category.strip():
-            raise ValueError(f"{location}.category: must be a non-empty string")
-        step = profile.get("horizon_step")
-        _config_number(step, location + ".horizon_step", integer=True)
-        if step > inference["pred_len"]:
-            raise ValueError(f"{location}.horizon_step: exceeds prediction length")
-        seconds = profile.get("horizon_seconds")
-        _config_number(seconds, location + ".horizon_seconds")
-        if not math.isclose(seconds, step / inference["sample_fps"], rel_tol=1e-9, abs_tol=1e-12):
-            raise ValueError(f"{location}.horizon_seconds: inconsistent with horizon_step and sample_fps")
-        horizon_ms = round(seconds * 1000)
-        if horizon_ms <= 0 or (category, horizon_ms) in seen:
-            raise ValueError(f"{location}: duplicate or invalid category/horizon in milliseconds")
-        seen.add((category, horizon_ms))
-        bounds = _bootstrap_profile(profile, location)
-        if any(value is not None for value in bounds["bins"]):
-            indexed.setdefault(category, {})[horizon_ms] = bounds
-    if not indexed:
-        raise ValueError(f"{path}: certificate has no usable profiles")
-    usable_count = sum(len(entries) for entries in indexed.values())
-    if "usable_profile_count" in certificate and certificate["usable_profile_count"] != usable_count:
-        raise ValueError(f"{path}.usable_profile_count: inconsistent with profiles")
-    return indexed
-
-
-def _load_calibration_by_vehicle(vehicles, fps, ego_vehicle):
-    """Read certificates once, verify predictor identity, and keep them separate."""
-    if not any(vehicle["type"] == "aggregating" for vehicle in vehicles.values()):
-        return {}
-    certificate_cache, checkpoint_hashes, registry = {}, {}, {}
-    for vehicle_id, vehicle in vehicles.items():
-        if vehicle["type"] == "basic" and vehicle_id != ego_vehicle:
-            continue
-        predictor = vehicle["predictor"]
-        path = f"vehicles.{vehicle_id}.predictor.calibration_certificate"
-        certificate_path = predictor.get("calibration_certificate")
-        if not isinstance(certificate_path, str) or not certificate_path.strip():
-            raise ValueError(f"{path}: required for fusion")
-        checkpoint_path = predictor.get("checkpoint")
-        if not checkpoint_path:
-            raise ValueError(f"{path}: requires predictor.checkpoint to verify certificate identity")
-        certificate_path = os.path.realpath(os.path.expanduser(certificate_path))
-        checkpoint_path = os.path.realpath(os.path.expanduser(checkpoint_path))
-        try:
-            if certificate_path not in certificate_cache:
-                with open(certificate_path, "r") as handle:
-                    certificate_cache[certificate_path] = json.load(handle)
-            if checkpoint_path not in checkpoint_hashes:
-                digest = hashlib.sha256()
-                with open(checkpoint_path, "rb") as handle:
-                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                checkpoint_hashes[checkpoint_path] = digest.hexdigest()
-        except (OSError, ValueError) as error:
-            raise ValueError(f"{path}: cannot load certificate or checkpoint: {error}") from error
-        certificate = certificate_cache[certificate_path]
-        if (not isinstance(certificate, dict) or type(certificate.get("schema_version")) is not int
-                or certificate["schema_version"] != 2):
-            raise ValueError(f"{path}: requires bootstrap certificate schema_version=2; regenerate legacy certificates")
-        identity = certificate.get("checkpoint")
-        if not isinstance(identity, dict) or identity.get("sha256") != checkpoint_hashes[checkpoint_path]:
-            raise ValueError(f"{path}: checkpoint SHA256 does not match predictor.checkpoint")
-        inference = certificate.get("inference")
-        if not isinstance(inference, dict):
-            raise ValueError(f"{path}.inference: must be a dictionary")
-        expected = {
-            "layout": predictor["layout"],
-            "obs_len": round(vehicle["parameters"]["observed_past_s"] * fps),
-            "pred_len": round(vehicle["parameters"]["prediction_horizon_s"] * fps),
-            "mode_selection": "runtime_output_index_0",
-            "alignment_policy": "native_forecast_timestamps",
-            "coordinate_frame": "world", "coordinate_units": "meters",
-        }
-        for name in ("obs_len", "pred_len"):
-            _config_number(inference.get(name), path + ".inference." + name, integer=True)
-        for name, value in expected.items():
-            if inference.get(name) != value:
-                raise ValueError(f"{path}.inference.{name}: expected {value!r}")
-        _config_number(inference.get("sample_fps"), path + ".inference.sample_fps")
-        if not math.isclose(inference["sample_fps"], fps, rel_tol=1e-9, abs_tol=0):
-            raise ValueError(f"{path}.inference.sample_fps: must match dataset.fps={fps}")
-        registry[vehicle_id] = {
-            "certificate_path": certificate_path,
-            "checkpoint": identity,
-            "inference": inference,
-            "profiles": _certificate_profiles(certificate, path, inference),
-        }
-    return registry
 
 def load_config(yaml_path: str) -> dict:
     """
@@ -370,6 +236,12 @@ def validate_vehicle_config(vehicle_key, vehicle_dict) -> dict:
                 msg = f"Vehicle '{vehicle_key}' detector, you must provide checkpoint or detections folder path)."
                 print(msg)
                 raise ValueError(msg)   
+            if "reflect_lidar_y" in detector:
+                _config_bool(detector["reflect_lidar_y"],
+                             f"vehicles.{vehicle_key}.detector.reflect_lidar_y")
+            if "max_distance_m" in detector:
+                _config_number(detector["max_distance_m"],
+                               f"vehicles.{vehicle_key}.detector.max_distance_m")
     else:
         msg = f"Vehicle '{vehicle_key}' detector must be a dictionary."
         print(msg)
@@ -606,14 +478,29 @@ def parse_config(config: dict) -> dict:
         print(msg)
         raise ValueError(msg)
 
+    # Certificates are owned and loaded by each vehicle, never by receivers.
+    linear_fusion = any(
+        vehicle["type"] == "aggregating"
+        and vehicle["category_l"]["fusion"]["type"] in ("linear_fusion", "linear_fusion_cross")
+        for vehicle in vehicles_dict.values()
+    )
+    for vehicle_id, vehicle in vehicles_dict.items():
+        predictor = vehicle["predictor"]
+        certificate_path = predictor.get("calibration_certificate")
+        required = linear_fusion and vehicle["type"] in ("aggregating", "broadcasting", "hybrid")
+        if required and certificate_path is None:
+            raise ValueError(f"vehicles.{vehicle_id}.predictor.calibration_certificate: required for linear fusion")
+        if certificate_path is not None:
+            if not isinstance(certificate_path, str) or not certificate_path.strip():
+                raise ValueError(f"vehicles.{vehicle_id}.predictor.calibration_certificate: must be a path")
+            if not predictor.get("checkpoint"):
+                raise ValueError(f"vehicles.{vehicle_id}.predictor.checkpoint: required to verify certificate identity")
+
     ########################## Parsed config 
     parsed_config = {
         "data": data,
         "ego_vehicle": config["ego_vehicle"],
         "vehicles": vehicles_dict,
-        "calibration_by_vehicle": _load_calibration_by_vehicle(
-            vehicles_dict, data["fps"], config["ego_vehicle"],
-        ),
     }
     print("DeepAccident configuration parsed successfully.")
     return parsed_config

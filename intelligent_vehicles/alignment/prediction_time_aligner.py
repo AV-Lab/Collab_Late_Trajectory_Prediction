@@ -5,6 +5,8 @@ from copy import deepcopy
 
 import numpy as np
 
+from calibration.runtime import valid_bounds
+
 
 class PredictionTimeAligner:
     def __init__(self, align=False, min_points=10):
@@ -37,16 +39,32 @@ class PredictionTimeAligner:
         if (mask.ndim != 1 or len(mask) != len(forecast["t"])
                 or any(not isinstance(value, (bool, np.bool_)) for value in mask)):
             raise ValueError("native_point_mask must contain one boolean per prediction timestamp.")
-        return int(origin), mask.tolist()
+        horizons = forecast.get("native_horizon_ms")
+        if horizons is None:
+            horizons = [int(prediction["pred_ts_ms"]) + t - int(origin)
+                        for t in PredictionTimeAligner._milliseconds(forecast["t"])]
+        if (not isinstance(horizons, (list, tuple)) or len(horizons) != len(forecast["t"])
+                or any(isinstance(h, (bool, np.bool_)) or not isinstance(h, (int, np.integer))
+                       or h <= 0 for h in horizons)):
+            raise ValueError("native_horizon_ms must contain one positive native horizon per timestamp.")
+        bounds = forecast.get("bounds", [None] * len(forecast["t"]))
+        if (not isinstance(bounds, (list, tuple)) or len(bounds) != len(forecast["t"])
+                or any(value is not None and not valid_bounds(value) for value in bounds)):
+            raise ValueError("bounds must contain one valid L/U risk pair or None per timestamp.")
+        if any(value is not None for value in bounds) and forecast.get("risk_unit") != "m2":
+            raise ValueError("Available bounds require risk_unit=m2.")
+        return int(origin), mask.tolist(), list(horizons), list(bounds)
 
     @classmethod
     def rebase(cls, prediction, ego_timestamp_ms):
         """Copy a forecast, preserving absolute times under a new origin."""
         result = deepcopy(prediction)
         forecast = result["prediction"]
-        origin, native_mask = cls._calibration_metadata(prediction)
+        origin, native_mask, horizons, bounds = cls._calibration_metadata(prediction)
         forecast.setdefault("forecast_origin_ms", origin)
         forecast["native_point_mask"] = native_mask
+        forecast["native_horizon_ms"] = horizons
+        forecast["bounds"] = deepcopy(bounds)
         offsets = cls._milliseconds(forecast["t"])
         if len(offsets) != len(forecast["xy"]) or len(offsets) != len(forecast["cov"]):
             raise ValueError("Prediction timestamps, means and covariances must have equal lengths.")
@@ -61,7 +79,7 @@ class PredictionTimeAligner:
     def remove_outdated(cls, prediction, first_query_t, keep_left_bracket=False):
         """Trim before the first query, optionally retaining interpolation support."""
         forecast = prediction["prediction"]
-        origin, native_mask = cls._calibration_metadata(prediction)
+        origin, native_mask, horizons, bounds = cls._calibration_metadata(prediction)
         times = cls._milliseconds(forecast["t"])
         first_query_ms = cls._milliseconds([first_query_t])[0]
         start = bisect_left(times, first_query_ms)
@@ -70,17 +88,18 @@ class PredictionTimeAligner:
         return {**prediction, "prediction": {
             **forecast, **{key: forecast[key][start:] for key in ("t", "xy", "cov")},
             "forecast_origin_ms": origin, "native_point_mask": native_mask[start:],
+            "native_horizon_ms": horizons[start:], "bounds": deepcopy(bounds[start:]),
         }}
 
     @classmethod
     def align_to_ego_timestamps(cls, prediction, ego_timestamps):
-        """Interpolate means and full covariances within sharing time coverage.
+        """Interpolate positions and copy the nearest native P/L/U tuple.
 
-        Covariance interpolation is a reported-uncertainty policy, not a
-        calculation of the interpolated mean's true error covariance.
+        Earlier timestamps win ties. Native certificates do not automatically
+        certify interpolated positions; this is an explicit transfer policy.
         """
         forecast = prediction["prediction"]
-        origin, native_mask = cls._calibration_metadata(prediction)
+        origin, native_mask, horizons, bounds = cls._calibration_metadata(prediction)
         times = cls._milliseconds(forecast["t"])
         query_ms = cls._milliseconds(ego_timestamps)
         xy = np.asarray(forecast["xy"], dtype=np.float64)
@@ -90,26 +109,30 @@ class PredictionTimeAligner:
         if not np.isfinite(xy).all() or not np.isfinite(cov).all():
             raise ValueError("Alignment requires finite means and covariance matrices.")
         output_t, output_xy, output_cov, output_native_mask = [], [], [], []
+        output_horizons, output_bounds = [], []
         for t, query in zip(ego_timestamps, query_ms):
             right = bisect_left(times, query)
             if right < len(times) and times[right] == query:
                 mean = deepcopy(forecast["xy"][right])
-                covariance = deepcopy(forecast["cov"][right])
+                nearest = right
                 is_native = native_mask[right]
             elif 0 < right < len(times):
                 weight = (query - times[right - 1]) / (times[right] - times[right - 1])
                 mean = ((1 - weight) * xy[right - 1] + weight * xy[right]).tolist()
-                covariance = ((1 - weight) * cov[right - 1] + weight * cov[right]).tolist()
+                nearest = right - 1 if query - times[right - 1] <= times[right] - query else right
                 is_native = False
             else:
                 continue
             output_t.append(float(t))
             output_xy.append(mean)
-            output_cov.append(covariance)
+            output_cov.append(deepcopy(forecast["cov"][nearest]))
             output_native_mask.append(is_native)
+            output_horizons.append(horizons[nearest])
+            output_bounds.append(deepcopy(bounds[nearest]))
         return {**prediction, "prediction": {
             **forecast, "t": output_t, "xy": output_xy, "cov": output_cov,
             "forecast_origin_ms": origin, "native_point_mask": output_native_mask,
+            "native_horizon_ms": output_horizons, "bounds": output_bounds,
         }}
 
     @classmethod

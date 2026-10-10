@@ -1,0 +1,25 @@
+# Ego-only OPV2V valid: gt_occ, metric_association, and LSTM 10/20.
+# Same checkpoint and rates as v1_valid.yaml; vehicle_1 uses dataset slot 0.
+dataset:
+  name: OPV2V
+  path: preprocess/preprocessed/OPV2V
+  split: valid
+  fps: 10
+ego_vehicle: vehicle_1
+vehicles:
+  vehicle_1:
+    type: basic
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: gt_occ
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+    sensors:
+    - lidar01

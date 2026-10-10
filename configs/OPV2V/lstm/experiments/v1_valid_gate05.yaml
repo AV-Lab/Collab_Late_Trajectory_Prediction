@@ -1,10 +1,9 @@
-# OPV2V test: vehicle_1 aggregates; vehicle_2 shares. Both use LSTM.
-# Category L: linear fusion with certificate confidence gate; Category S: vector GP.
-# Alignment on; KF, consensus and GT calibration off.
+# Stricter certificate gate: U < 0.5 L0; no cap or KF.
+# All other settings match v1_valid.yaml.
 dataset:
   name: OPV2V
   path: preprocess/preprocessed/OPV2V
-  split: test
+  split: valid
   fps: 10
 ego_vehicle: vehicle_1
 vehicles:
@@ -21,8 +20,8 @@ vehicles:
       name: metric_association
     predictor:
       layout: track
-      checkpoint: ../TrajZoo/trajzoo-code/checkpoints/opv2v/bivariate/lstm_bivariate_relative_k1_opv2v/best.pth
-      calibration_certificate: outputs/calibration/lstm_bootstrap_certificate.json
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
     listener:
       topic: pred
       drop: false
@@ -34,6 +33,7 @@ vehicles:
         type: none
       fusion:
         type: linear_fusion
+        gate_ratio: 0.5
     category_s:
       alignment:
         align: true
@@ -58,8 +58,8 @@ vehicles:
       name: metric_association
     predictor:
       layout: track
-      checkpoint: ../TrajZoo/trajzoo-code/checkpoints/opv2v/bivariate/lstm_bivariate_relative_k1_opv2v/best.pth
-      calibration_certificate: outputs/calibration/lstm_bootstrap_certificate.json
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
     sensors:
     - lidar01
     broadcaster:

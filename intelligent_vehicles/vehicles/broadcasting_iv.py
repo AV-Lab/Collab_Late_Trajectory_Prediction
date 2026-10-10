@@ -48,12 +48,20 @@ class BroadcastingIV(BasicIV):
                          load_lidar)
         
         self.broadcasting_interval_s = broadcaster_config["broadcasting_interval_s"]
-        self._broadcaster = Broadcaster(root=channel_root, topic=broadcaster_config["topic"])
+        self._broadcaster = Broadcaster(
+            root=channel_root, topic=broadcaster_config["topic"],
+            certificate=self.certificate,
+        )
         self.next_broadcasting_time = self.starting_time + 1.0
         self.bcast_period = self.broadcasting_interval_s
         MESSAGE_SIZE_TMP_DIR.mkdir(parents=True, exist_ok=True)
         self.message_size_path = MESSAGE_SIZE_TMP_DIR / f"{self.name}.txt"
         
+
+    def reset(self):
+        super().reset()
+        self.next_broadcasting_time = self.starting_time + 1.0
+
 
     def _build_packet(self, predictions, ego_position, sim_time):
         packet = {"sender": str(self.name),

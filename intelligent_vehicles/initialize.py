@@ -81,8 +81,7 @@ def extract_vehicles_sensors_data(data, vehicle_count):
     return scenarios_arr, [str(path) for path in sensors_data_paths]
     
 
-def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_root, load_lidar,
-                       calibration_by_vehicle=None):
+def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_root, load_lidar):
     print(f"Initializing vehicle '{veh_id}' of type '{veh_params['type']}'.")
     vehicle_type = veh_params["type"]
     name = veh_id
@@ -103,7 +102,6 @@ def initialize_vehicle(sensors_data, veh_id, veh_params, clock_step, channel_roo
             listener_config=listener_config,
             category_config={category: veh_params[category]
                              for category in ("category_l", "category_s")},
-            calibration_by_vehicle=calibration_by_vehicle,
             parameters=parameters,
             sensors=sensors,
             data=sensors_data,
@@ -173,8 +171,7 @@ def initialize_vehicles(config, clock_step, channel_root, visualize=False):
                                 veh_params, 
                                 clock_step, 
                                 channel_root,
-                                load_lidar=(visualize and veh_id == ego_vehicle),
-                                calibration_by_vehicle=config.get("calibration_by_vehicle", {}))
+                                load_lidar=(visualize and veh_id == ego_vehicle))
         
         if veh_id == ego_vehicle:
             ego_iv = iv

@@ -11,22 +11,29 @@ def cosd(a_deg: float) -> float:
 def sind(a_deg: float) -> float:
     return math.sin(math.radians(a_deg))
 
-def rpy_to_R(roll: float, yaw: float, pitch: float, degrees: bool = True) -> np.ndarray:
-    if degrees:
-        roll, yaw, pitch = map(math.radians, (roll, yaw, pitch))
+def carla_rotation_matrix(roll_deg: float, yaw_deg: float, pitch_deg: float) -> np.ndarray:
+    """CARLA local-to-world rotation; angles are in degrees (roll, yaw, pitch)."""
+    roll, yaw, pitch = map(math.radians, (roll_deg, yaw_deg, pitch_deg))
     cr, sr = math.cos(roll), math.sin(roll)
     cy, sy = math.cos(yaw), math.sin(yaw)
     cp, sp = math.cos(pitch), math.sin(pitch)
-    Rx = np.array([[1,0,0],[0,cr,-sr],[0,sr,cr]], dtype=np.float64)
-    Ry = np.array([[cp,0,sp],[0,1,0],[-sp,0,cp]], dtype=np.float64)
-    Rz = np.array([[cy,-sy,0],[sy,cy,0],[0,0,1]], dtype=np.float64)
-    return (Rz @ Ry) @ Rx
+    return np.array([
+        [cy * cp, cy * sp * sr - sy * cr, -cy * sp * cr - sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, -sy * sp * cr + cy * sr],
+        [sp, -cp * sr, cp * cr],
+    ], dtype=np.float64)
 
-def pose_to_T(x: float, y: float, z: float, roll: float, yaw: float, pitch: float, degrees: bool = True) -> np.ndarray:
+def carla_pose_to_T(pose: Iterable[float]) -> np.ndarray:
+    """Build a native CARLA transform from [x, y, z, roll, yaw, pitch]."""
+    x, y, z, roll, yaw, pitch = map(float, pose)
     T = np.eye(4, dtype=np.float64)
-    T[:3,:3] = rpy_to_R(roll, yaw, pitch, degrees=degrees)
+    T[:3,:3] = carla_rotation_matrix(roll, yaw, pitch)
     T[:3, 3] = np.array([x, y, z], dtype=np.float64)
     return T
+
+def wrap_yaw(yaw: float) -> float:
+    """Wrap a heading in radians to [-pi, pi)."""
+    return (yaw + math.pi) % (2.0 * math.pi) - math.pi
 
 def inv_T(T: np.ndarray) -> np.ndarray:
     R = T[:3,:3]
