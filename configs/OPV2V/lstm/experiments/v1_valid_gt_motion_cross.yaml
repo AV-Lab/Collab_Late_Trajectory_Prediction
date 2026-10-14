@@ -1,5 +1,5 @@
 # GT detection/tracking with frozen motion certificate and cross-error fusion.
-# Complete-forecast gate; constant robust-optimal weights; no cap or KF gate.
+# Complete-forecast gate; constant robust-optimal weights; no cap.
 dataset:
   name: OPV2V
   path: preprocess/preprocessed/OPV2V

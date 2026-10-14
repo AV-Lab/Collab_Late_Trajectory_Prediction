@@ -1,5 +1,5 @@
 # GT detection/tracking with frozen motion certificate and cross-error fusion.
-# Availability intervals and inverse-risk weights; cross-term risk bound; no cap or KF gate.
+# Availability intervals and inverse-risk weights; cross-term risk bound; no cap.
 dataset:
   name: OPV2V
   path: preprocess/preprocessed/OPV2V

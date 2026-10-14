@@ -31,6 +31,31 @@ class TrajDataloader:
         self.load_lidar = load_lidar
 
     @staticmethod
+    def load_lidar_points(path):
+        """Read one LiDAR frame as XYZ, without retaining an open archive."""
+        if not path or not os.path.isfile(path):
+            return None
+        suffix = os.path.splitext(os.fspath(path))[1].lower()
+        if suffix == ".npy":
+            points = np.load(path, allow_pickle=False)
+        elif suffix == ".npz":
+            with np.load(path, allow_pickle=False) as archive:
+                if "data" not in archive.files:
+                    raise ValueError(f"LiDAR archive has no 'data' array: {path}")
+                points = archive["data"]
+        elif suffix == ".pcd":
+            points = TrajDataloader._load_pcd_xyz(path)
+        elif suffix == ".bin":
+            data = np.fromfile(path, dtype=np.float32)
+            points = data[:data.size - data.size % 4].reshape(-1, 4)
+        else:
+            print(f"[WARN] Unsupported lidar format: {path}")
+            return None
+        if points.ndim != 2 or points.shape[1] < 3:
+            raise ValueError(f"LiDAR points must have shape (N, >=3): {path}")
+        return points[:, :3]
+
+    @staticmethod
     def _load_pcd_xyz(path):
         fields = None
         sizes = None
@@ -150,29 +175,8 @@ class TrajDataloader:
                 
             # Load LiDAR data
             lidar_path = frame_info["lidar"]
-            if not self.load_lidar:
-                loaded['lidar'] = None
-            elif lidar_path and os.path.isfile(lidar_path):
-            
-                if lidar_path.endswith(".npy") or lidar_path.endswith(".npz"):
-                    loaded['lidar'] = np.load(lidar_path)
-                    if 'data' in loaded['lidar'].files:
-                        loaded['lidar'] = loaded['lidar']['data'][:, :3]
-            
-                elif lidar_path.endswith(".pcd"):
-                    loaded['lidar'] = self._load_pcd_xyz(lidar_path)
-                    
-                elif lidar_path.endswith(".bin"):
-                    arr = np.fromfile(str(lidar_path), dtype=np.float32)
-                    if arr.size % 4 != 0:
-                        arr = arr[: arr.size - (arr.size % 4)]
-                    pts = arr.reshape(-1, 4)
-                    loaded['lidar'] = pts[:, :3]
-                else:
-                    print(f"[WARN] Unsupported lidar format: {lidar_path}")
-                    loaded['lidar'] = None
-            else:
-                loaded['lidar'] = None
+            loaded['lidar_path'] = lidar_path
+            loaded['lidar'] = self.load_lidar_points(lidar_path) if self.load_lidar else None
     
             loaded['labels'] = frame_info["labels"]
             loaded['ego_state'] = frame_info["ego_state"]

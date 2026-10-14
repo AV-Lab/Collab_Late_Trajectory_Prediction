@@ -40,11 +40,6 @@ def _validate_categories(vehicle_key, vehicle):
         if name in vehicle:
             raise ValueError(f"{prefix}.{name}: move settings into category_l and category_s")
     gate_defaults = {
-        "kf": {
-            "mode": "simple", "min_streak": 2, "cov_ratio_thr": 2.0, "nis_thr": 5.99,
-            "w_cov": 0.5, "w_miss": 0.3, "w_nis": 0.2,
-            "kfri_thr": 0.6, "cov_cap": 2.0, "nis_cap": 2.0,
-        },
         "consensus": {"threshold": 2.0, "min_predictions": 3, "min_overlap": 0.5},
     }
     for category in ("category_l", "category_s"):
@@ -69,9 +64,9 @@ def _validate_categories(vehicle_key, vehicle):
 
         gate = branch.setdefault("gate", {"type": "none"})
         gate_path = path + ".gate"
-        _config_block(gate, gate_path, {"type", *gate_defaults["kf"], *gate_defaults["consensus"]})
+        _config_block(gate, gate_path, {"type", *gate_defaults["consensus"]})
         kind = gate.get("type", "none")
-        supported = {"none", "kf"} if category == "category_l" else {"none", "consensus"}
+        supported = {"none"} if category == "category_l" else {"none", "consensus"}
         if not isinstance(kind, str) or kind not in supported:
             raise ValueError(f"{gate_path}.type: must be one of {sorted(supported)}")
         defaults = gate_defaults.get(kind, {})
@@ -79,15 +74,7 @@ def _validate_categories(vehicle_key, vehicle):
         gate.setdefault("type", "none")
         for name, default in defaults.items():
             gate.setdefault(name, default)
-        if kind == "kf":
-            if gate["mode"] not in ("simple", "kfri"):
-                raise ValueError(f"{gate_path}.mode: must be simple or kfri")
-            _config_number(gate["min_streak"], gate_path + ".min_streak", integer=True, inclusive=True)
-            for name in ("cov_ratio_thr", "nis_thr", "cov_cap", "nis_cap"):
-                _config_number(gate[name], gate_path + "." + name)
-            for name in ("w_cov", "w_miss", "w_nis", "kfri_thr"):
-                _config_number(gate[name], gate_path + "." + name, inclusive=True)
-        elif kind == "consensus":
+        if kind == "consensus":
             _config_number(gate["threshold"], gate_path + ".threshold")
             _config_number(gate["min_overlap"], gate_path + ".min_overlap", inclusive=True)
             _config_number(gate["min_predictions"], gate_path + ".min_predictions",
@@ -97,7 +84,7 @@ def _validate_categories(vehicle_key, vehicle):
         if "fusion" not in branch:
             raise ValueError(f"{fusion_path}: required")
         fusion = _config_block(branch["fusion"], fusion_path,
-                               {"type", "workers", "gate_ratio", "cap"})
+                               {"type", "workers", "gate_ratio", "cap", "max_mean_cov_trace_m2"})
         kind = fusion.get("type")
         supported = SUPPORTED_FUSION_TYPES if category == "category_l" else {"gp", "gp_vector"}
         if not isinstance(kind, str) or kind not in supported:
@@ -110,7 +97,10 @@ def _validate_categories(vehicle_key, vehicle):
         elif kind in ("linear_fusion", "linear_fusion_cross"):
             allowed.add("gate_ratio")
             if kind == "linear_fusion":
-                allowed.add("cap")
+                allowed.update({"cap", "max_mean_cov_trace_m2"})
+                if "max_mean_cov_trace_m2" in fusion:
+                    _config_number(fusion["max_mean_cov_trace_m2"],
+                                   fusion_path + ".max_mean_cov_trace_m2")
             ratio = fusion.get("gate_ratio", 1.0)
             _config_number(ratio, fusion_path + ".gate_ratio")
             if ratio > 1:

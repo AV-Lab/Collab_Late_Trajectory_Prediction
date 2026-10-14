@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from evaluation.paths import OUTPUTS_DIR, RUNTIME_TMP_DIR
+from preprocess.constants import Constants
 
 import numpy as np
 
@@ -128,7 +129,6 @@ def _new_totals(uncertainty_options=None):
         "num_missed": 0,
         "num_raw_unmatched": 0,
         "num_false_positives": 0,
-        "num_certified_retained_unmatched": 0,
         "num_stale_matched": 0,
         "horizon_steps_sum": 0,
         "horizon_count": 0,
@@ -226,9 +226,6 @@ def _summary(totals):
         "num_missed": int(totals["num_missed"]),
         "num_raw_unmatched": int(totals["num_raw_unmatched"]),
         "num_false_positives": int(totals["num_false_positives"]),
-        "num_certified_retained_unmatched": int(
-            totals["num_certified_retained_unmatched"]
-        ),
         "num_stale_matched": int(totals["num_stale_matched"]),
         "gt_coverage": _safe_ratio(totals["num_matched"], totals["num_gt"]),
         "false_positive_percentage": _safe_ratio(
@@ -252,6 +249,8 @@ class Evaluator:
 
     Every matched forecast appearance is one ADE/FDE/MSE_2D sample. MSE_2D
     averages dx² + dy² over valid points, then weights forecasts equally.
+    Every currently unmatched prediction counts as a false positive,
+    regardless of earlier GT matches or whether its track is retained.
     Hit rates count successful matched forecasts over all ground-truth
     trajectories, so missed
     ground truth contributes a failed hit. Uncertainty metrics pool valid
@@ -277,7 +276,7 @@ class Evaluator:
         prediction_horizon,
         observation_length,
         sample_fps=None,
-        iou_threshold=0.7,
+        iou_threshold=Constants.EVALUATION_IOU_THRESHOLD,
         covariance_jitter=1e-6,
         store_distributions=True,
         *,
@@ -323,7 +322,6 @@ class Evaluator:
         self._scenario_name = None
         self._scenario = None
         self._scenario_by_source = None
-        self._certified_nodes = {}
         if self.output_dir == OUTPUTS_DIR and self.generate_plots:
             # The legacy caller relies on construction starting a fresh run.
             # Isolated vehicle reports must never clear another run's files.
@@ -340,7 +338,6 @@ class Evaluator:
         self._scenario_name = str(scenario_name)
         self._scenario = self._make_totals()
         self._scenario_by_source = {name: self._make_totals() for name in self.SOURCE_NAMES}
-        self._certified_nodes = {}
 
     def _sequence_to_array(self, sequence, max_steps, reverse=False):
         if sequence is None:
@@ -480,7 +477,6 @@ class Evaluator:
         num_missed=0,
         num_raw_unmatched=0,
         num_fp=0,
-        num_certified_retained_unmatched=0,
         num_stale_matched=0,
     ):
         totals["num_gt"] += int(num_gt)
@@ -488,9 +484,6 @@ class Evaluator:
         totals["num_missed"] += int(num_missed)
         totals["num_raw_unmatched"] += int(num_raw_unmatched)
         totals["num_false_positives"] += int(num_fp)
-        totals["num_certified_retained_unmatched"] += int(
-            num_certified_retained_unmatched
-        )
         totals["num_stale_matched"] += int(num_stale_matched)
 
     def _add_forecast(self, totals, values):
@@ -559,7 +552,7 @@ class Evaluator:
         ground_truth = response["trajectories"]
         track_history = {tracklet["id"]: tracklet["tracklet"] for tracklet in tracklets}
         local_streak = {
-            tracklet["id"]: int(tracklet["kf_gate"]["streak"])
+            tracklet["id"]: int(tracklet["missed_frames"])
             for tracklet in tracklets
         }
 
@@ -568,53 +561,7 @@ class Evaluator:
             predictions, ground_truth, self.iou_threshold,
         )
 
-        raw_unmatched_indices = list(false_indices)
-        matched_prediction_indices = {
-            prediction_index for _, prediction_index in matches
-        }
-        prediction_indices_by_id = {
-            prediction["id"]: index
-            for index, prediction in enumerate(predictions)
-        }
-
-        active_prediction_ids = set(prediction_indices_by_id)
-        self._certified_nodes = {
-            node_id: certified
-            for node_id, certified in self._certified_nodes.items()
-            if node_id in active_prediction_ids
-        }
-        for track_id, streak in local_streak.items():
-            if streak == 0:
-                prediction_index = prediction_indices_by_id[track_id]
-                self._certified_nodes[track_id] = (
-                    prediction_index in matched_prediction_indices
-                )
-            elif track_id not in self._certified_nodes:
-                self._certified_nodes[track_id] = False
-
-        category_II_ids = active_prediction_ids - set(local_streak)
-        for node_id in category_II_ids:
-            prediction_index = prediction_indices_by_id[node_id]
-            if prediction_index in matched_prediction_indices:
-                self._certified_nodes[node_id] = True
-            elif node_id not in self._certified_nodes:
-                self._certified_nodes[node_id] = False
-
-        certified_retained_indices = [
-            index
-            for index in raw_unmatched_indices
-            if self._certified_nodes[predictions[index]["id"]]
-            and (
-                predictions[index]["id"] not in local_streak
-                or local_streak[predictions[index]["id"]] > 0
-            )
-        ]
-        certified_retained_set = set(certified_retained_indices)
-        false_indices = [
-            index
-            for index in raw_unmatched_indices
-            if index not in certified_retained_set
-        ]
+        false_indices = list(false_indices)
         stale_matched = sum(
             predictions[prediction_index]["id"] in local_streak
             and local_streak[predictions[prediction_index]["id"]] > 0
@@ -645,18 +592,10 @@ class Evaluator:
                 if prediction_id in local_streak and local_streak[prediction_id] > 0:
                     stale_by_source[source] += 1
 
-        raw_unmatched_by_source = defaultdict(int)
         false_by_source = defaultdict(int)
-        retained_by_source = defaultdict(int)
-        for prediction_index in raw_unmatched_indices:
-            for source, _ in prediction_sources[prediction_index]:
-                raw_unmatched_by_source[source] += 1
         for prediction_index in false_indices:
             for source, _ in prediction_sources[prediction_index]:
                 false_by_source[source] += 1
-        for prediction_index in certified_retained_indices:
-            for source, _ in prediction_sources[prediction_index]:
-                retained_by_source[source] += 1
 
         available_sources = {
             source
@@ -674,9 +613,8 @@ class Evaluator:
                     num_gt=len(ground_truth),
                     num_matched=matched_count,
                     num_missed=len(ground_truth) - matched_count,
-                    num_raw_unmatched=raw_unmatched_by_source[source],
+                    num_raw_unmatched=false_by_source[source],
                     num_fp=false_by_source[source],
-                    num_certified_retained_unmatched=retained_by_source[source],
                     num_stale_matched=stale_by_source[source],
                 )
 
@@ -691,9 +629,8 @@ class Evaluator:
             num_gt=len(ground_truth),
             num_matched=len(matches),
             num_missed=len(missed_ids),
-            num_raw_unmatched=len(raw_unmatched_indices),
+            num_raw_unmatched=len(false_indices),
             num_fp=len(false_indices),
-            num_certified_retained_unmatched=len(certified_retained_indices),
             num_stale_matched=stale_matched,
         )
         self._add_counts(
@@ -701,9 +638,8 @@ class Evaluator:
             num_gt=len(ground_truth),
             num_matched=len(matches),
             num_missed=len(missed_ids),
-            num_raw_unmatched=len(raw_unmatched_indices),
+            num_raw_unmatched=len(false_indices),
             num_fp=len(false_indices),
-            num_certified_retained_unmatched=len(certified_retained_indices),
             num_stale_matched=stale_matched,
         )
 
@@ -711,7 +647,6 @@ class Evaluator:
         matched_visualization = []
         missed_visualization = []
         false_visualization = []
-        certified_retained_visualization = []
         label_metrics = []
 
         for gt_id, prediction_index in matches:
@@ -848,44 +783,12 @@ class Evaluator:
                 },
             })
 
-        for prediction_index in certified_retained_indices:
-            prediction = predictions[prediction_index]
-            category = str(prediction["category"]).lower()
-            categories_in_frame.add(category)
-            self._add_counts(
-                self.by_category[category],
-                num_raw_unmatched=1,
-                num_certified_retained_unmatched=1,
-            )
-            _, _, primary, _, _ = self._select_predictions(prediction)
-            certified_retained_visualization.append({
-                "id": prediction["id"],
-                "category": category,
-                "streak": (
-                    local_streak[prediction["id"]]
-                    if prediction["id"] in local_streak
-                    else None
-                ),
-                "pred": {
-                    "past": self._sequence_to_array(
-                        track_history[prediction["id"]],
-                        self.observation_length,
-                        reverse=True,
-                    ) if prediction["id"] in track_history else None,
-                    "bbox": prediction["cur_location"],
-                    "future": primary.get("pred") if primary else {},
-                    "cov": primary.get("cov") if primary else None,
-                    "timestamp": prediction["timestamp"],
-                },
-            })
-
         for category in categories_in_frame:
             self.by_category[category]["frames_seen"] += 1
         return {
             "matched": matched_visualization,
             "missed": missed_visualization,
             "false_positives": false_visualization,
-            "certified_retained_unmatched": certified_retained_visualization,
             "label_metrics": label_metrics,
         }
 
@@ -1043,7 +946,11 @@ class Evaluator:
             "ellipse_confidence_levels": list(CONFIDENCE_LEVELS),
             "ECE_alias": "coverage_ECE_L1 (not scalar predictive-CDF CE)",
         })
-        return {"uncertainty_protocol": protocol, "run": dict(self.run_metadata)}
+        return {
+            "uncertainty_protocol": protocol,
+            "false_positive_policy": "all_currently_unmatched_predictions",
+            "run": dict(self.run_metadata),
+        }
 
     def uncertainty_records(self, source=None, include_excluded=False):
         """Iterate identified samples without requiring a file or plot export."""

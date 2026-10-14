@@ -4,7 +4,9 @@ For each source, aggregate upper squared-error risk over the interval, then
 normalize inverse risks to obtain one weight used at every timestamp. Accept
 only when mean fused upper risk is strictly below the configured fraction of
 mean ego lower risk. An optional growing cone clips the accepted correction;
-the risk gate describes the candidate before clipping.
+the risk gate describes the candidate before clipping. An optional mean
+covariance-trace limit excludes sharers before weighting, retaining the original
+availability intervals and always keeping ego.
 L/U risks arrive in square metres with each source's covariance. The expected
 squared-error argument assumes valid conditional second-moment bounds,
 interpolation transfer and zero cross-source error moments; calibration does
@@ -48,6 +50,7 @@ class LinearFusion:
     """
 
     def __init__(self, ego_source_id, *, gate_ratio=1.0, cap=None,
+                 max_mean_cov_trace_m2=None,
                  rtol=1e-10, atol=1e-12):
         if not self._valid_source_id(ego_source_id):
             raise ValueError("ego_source_id must be a nonempty string.")
@@ -55,6 +58,10 @@ class LinearFusion:
             raise ValueError("rtol and atol must be finite nonnegative scalars.")
         if not self._valid_factor(gate_ratio) or not 0 < gate_ratio <= 1:
             raise ValueError("gate_ratio must be finite and in (0, 1].")
+        if max_mean_cov_trace_m2 is not None and (
+            not self._valid_factor(max_mean_cov_trace_m2) or max_mean_cov_trace_m2 <= 0
+        ):
+            raise ValueError("max_mean_cov_trace_m2 must be a finite positive scalar.")
         if cap is not None and (
             not isinstance(cap, Mapping) or set(cap) != {"radius_m", "horizon_s"}
             or any(not self._valid_factor(value) or value <= 0 for value in cap.values())
@@ -63,6 +70,9 @@ class LinearFusion:
         self.ego_source_id = ego_source_id
         self.gate_ratio = float(gate_ratio)
         self.cap = {key: float(value) for key, value in cap.items()} if cap is not None else None
+        self.max_mean_cov_trace_m2 = (
+            float(max_mean_cov_trace_m2) if max_mean_cov_trace_m2 is not None else None
+        )
         self.rtol, self.atol = float(rtol), float(atol)
         self.decisions = {}
 
@@ -332,6 +342,28 @@ class LinearFusion:
 
     def _evaluate_interval(self, times, prepared, interval):
         sources = interval["source_ids"]
+        if self.max_mean_cov_trace_m2 is not None:
+            interval.update(available_source_ids=list(sources),
+                            max_mean_cov_trace_m2=self.max_mean_cov_trace_m2,
+                            mean_cov_trace_by_source={}, excluded_sources=[])
+            try:
+                with np.errstate(over="raise", invalid="raise"):
+                    traces = {source: float(np.mean([
+                        np.trace(prepared[source][t]["shared"].covariance) for t in times
+                    ])) for source in sources[1:]}
+            except FloatingPointError:
+                interval["reason"] = "numerical_covariance_failure"
+                return False
+            excluded = [source for source, trace in traces.items()
+                        if trace > self.max_mean_cov_trace_m2]
+            sources = [source for source in sources if source not in excluded]
+            interval.update(source_ids=sources, mean_cov_trace_by_source=traces,
+                            excluded_sources=[{"source_id": source,
+                                               "reason": "mean_cov_trace_exceeded"}
+                                              for source in excluded])
+            if len(sources) == 1:
+                interval.update(weights={self.ego_source_id: 1.}, reason="all_sharers_filtered")
+                return False
         rows = interval["risk_per_point"]
         for t in times:
             ego = prepared[sources[1]][t]

@@ -119,6 +119,11 @@ class BroadcastingIV(BasicIV):
                     predictions = self.run_predictor(tracklets, t)  # pass sim-time 't'
                     response = {
                         "predictions": predictions,
+                        "detections": detections,
+                        "timestamp_ms": int(round(t * 1000.0)),
+                        "fps": self.fps,
+                        "observation_length": self.observed_past,
+                        "lidar_path": frame_data.get("lidar_path"),
                         "tracklets": tracklets,
                         "trajectories": trajectories,
                         "point_cloud": point_cloud,

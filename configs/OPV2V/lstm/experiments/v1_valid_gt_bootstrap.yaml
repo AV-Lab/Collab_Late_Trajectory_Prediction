@@ -1,6 +1,6 @@
 # Clean GT detection/tracking comparison: frozen bootstrap certificate.
 # Both vehicles require 10 consecutive raw GT history points; no KF imputation.
-# Original U < L0 fusion gate; cap and KF gate disabled.
+# Original U < L0 fusion gate; cap disabled.
 dataset:
   name: OPV2V
   path: preprocess/preprocessed/OPV2V

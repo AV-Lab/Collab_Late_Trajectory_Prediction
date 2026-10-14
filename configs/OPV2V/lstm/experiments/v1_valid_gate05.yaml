@@ -1,4 +1,4 @@
-# Stricter certificate gate: U < 0.5 L0; no cap or KF.
+# Stricter certificate gate: U < 0.5 L0; no cap.
 # All other settings match v1_valid.yaml.
 dataset:
   name: OPV2V

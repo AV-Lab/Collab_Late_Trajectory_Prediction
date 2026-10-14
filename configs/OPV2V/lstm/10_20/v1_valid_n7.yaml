@@ -1,0 +1,191 @@
+# OPV2V valid: frozen real detections and motion certificates on all vehicles.
+# Category L interval fusion with a covariance filter; Category S uses vector GP.
+# Total vehicle count is at most 7; actual count = min(7, scenario available).
+# Vehicle order preserves dataset assignment: vehicle_1, then vehicle_2, etc.
+dataset:
+  name: OPV2V
+  path: preprocess/preprocessed/OPV2V
+  split: valid
+  fps: 10
+ego_vehicle: vehicle_1
+vehicles:
+  vehicle_1:
+    type: aggregating
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: outputs/real_motion_fusion_10_20_v1_valid_n7_1010/detections/valid/0
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    listener:
+      topic: pred
+      drop: false
+    category_l:
+      alignment:
+        align: true
+        min_points: 10
+      gate:
+        type: none
+      fusion:
+        type: linear_fusion
+        max_mean_cov_trace_m2: 5.0  # Exclude sharers above this interval mean trace (m²).
+    category_s:
+      enabled: true
+      alignment:
+        align: true
+        min_points: 10
+      gate:
+        type: none
+      fusion:
+        type: gp_vector
+        workers: 1
+    sensors:
+    - lidar01
+  vehicle_2:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: outputs/real_motion_fusion_10_20_v1_valid_n7_1010/detections/valid/1
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred
+  vehicle_3:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: outputs/real_motion_fusion_10_20_v1_valid_n7_1010/detections/valid/2
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred
+  vehicle_4:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: outputs/real_motion_fusion_10_20_v1_valid_n7_1010/detections/valid/3
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred
+  vehicle_5:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: outputs/real_motion_fusion_10_20_v1_valid_n7_1010/detections/valid/4
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred
+  vehicle_6:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: outputs/real_motion_fusion_10_20_v1_valid_n7_1010/detections/valid/5
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred
+  vehicle_7:
+    type: broadcasting
+    parameters:
+      tracking_buffer_s: 2.0
+      observed_past_s: 1.0
+      prediction_horizon_s: 2.0
+      device: cpu
+    detector:
+      name: centerpoint
+      detections: outputs/real_motion_fusion_10_20_v1_valid_n7_1010/detections/valid/6
+      reflect_lidar_y: true
+      max_distance_m: 50.0
+    tracker:
+      name: metric_association
+    predictor:
+      layout: track
+      checkpoint: checkpoints/OPV2V/10_20/lstm_bivariate_relative/best.pth
+      calibration_certificate: outputs/calibration/OPV2V/lstm/10_20/motion_bootstrap/certificate.json
+    sensors:
+    - lidar01
+    broadcaster:
+      broadcasting_interval_s: 0.1
+      topic: pred

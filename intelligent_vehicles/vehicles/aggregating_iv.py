@@ -14,7 +14,8 @@ from intelligent_vehicles.listener import Listener
 from intelligent_vehicles.fusion.gp_fusion import GPFuser, GPFuserVector
 from intelligent_vehicles.fusion.linear_fusion import LinearFusion
 from intelligent_vehicles.alignment import PredictionTimeAligner
-from intelligent_vehicles.gates import ConsensusGate, KFGate
+from intelligent_vehicles.gates import ConsensusGate
+from intelligent_vehicles.objectstore.geometry import point_in_rotated_bev_box
 from evaluation.paths import RUNTIME_TMP_DIR
 from contextlib import ExitStack
 from copy import deepcopy
@@ -84,7 +85,6 @@ class AggregatingIV(BasicIV):
             "category_s": (local_fuser if same_gp else self._create_fuser(shared_config))
                           if self.category_s_enabled else None,
         }
-        self.kf_gate = self._create_gate(category_config["category_l"].get("gate", {}))
         self.consensus_gate = self._create_gate(category_config["category_s"].get("gate", {})) \
                               if self.category_s_enabled else None
         self.aligners = {
@@ -93,11 +93,17 @@ class AggregatingIV(BasicIV):
             if config.get("enabled", True)
         }
         self.last_prediction_timestamp = None
+        self.received_vehicle_poses = {}
         self.fusion_observer = None
         RUNTIME_TMP_DIR.mkdir(parents=True, exist_ok=True)
         self.runtime_path = RUNTIME_TMP_DIR / f"{self.name}.csv"
         self._runtime_header_checked = False
         self._listener.start_in_background()
+
+    def reset(self):
+        super().reset()
+        self.last_prediction_timestamp = None
+        self.received_vehicle_poses.clear()
 
     def close(self):
         try:
@@ -121,7 +127,8 @@ class AggregatingIV(BasicIV):
                 raise ValueError("Linear fusion requires this vehicle's local certificate.")
             return LinearFusion(ego_source_id=self.name,
                                 gate_ratio=config.get("gate_ratio", 1.0),
-                                cap=config.get("cap"))
+                                cap=config.get("cap"),
+                                max_mean_cov_trace_m2=config.get("max_mean_cov_trace_m2"))
         if config["type"] == "linear_fusion_cross":
             from intelligent_vehicles.fusion.linear_fusion_cross import LinearFusionCross
 
@@ -137,20 +144,16 @@ class AggregatingIV(BasicIV):
         kind = options.pop("type", "none")
         if kind == "none":
             return None
-        if kind == "kf":
-            return KFGate(**options)
         if kind == "consensus":
             options.setdefault("min_overlap", 0.5)
             return ConsensusGate(**options)
         raise ValueError(f"Unsupported gate type: {kind}")
 
-    def _apply_gates(self, pools, tracklets):
-        """Gate local and shared-only nodes independently, preserving map order."""
+    def _apply_gates(self, pools):
+        """Apply Category S consensus and preserve Category L and map order."""
         local = {node_id: values for node_id, values in pools.items() if values[3] == 1}
         shared = {node_id: values for node_id, values in pools.items() if values[3] == 2} \
                  if getattr(self, "category_s_enabled", True) else {}
-        if self.kf_gate is not None:
-            local = self.kf_gate.apply(local, tracklets)
         if self.consensus_gate is not None:
             shared = self.consensus_gate.apply(shared)
         selected = {**local, **shared}
@@ -208,8 +211,8 @@ class AggregatingIV(BasicIV):
             self.prediction_map.remove_unrefreshed_category_II_nodes()
         preds_with_pools = self.prediction_map.extract_pools()
 
-        # Gates own filtering and their decision records.
-        pools = self._apply_gates(preds_with_pools, tracklets)
+        # Consensus owns filtering and its decision records.
+        pools = self._apply_gates(preds_with_pools)
 
         # Preserve the supplied inputs for evaluation before clearing pools.
         fusion_inputs = {node_id: deepcopy(values[2])
@@ -274,13 +277,30 @@ class AggregatingIV(BasicIV):
                                   "prediction_horizon": payload["pred_hz"],
                                   "prediction_sampling": payload["pred_sampling"]}
             vehicle_location = payload["ego_position"]
+            previous_pose = self.received_vehicle_poses.get(payload["sender"])
+            if previous_pose is None or broadcasting_timestamp >= previous_pose["timestamp_ms"]:
+                self.received_vehicle_poses[payload["sender"]] = {
+                    "pose": dict(vehicle_location),
+                    "timestamp_ms": broadcasting_timestamp,
+                }
             shared_predictions = payload["predictions"]
 
             shared_predictions = PredictionTimeAligner.prepare(
                 shared_predictions,
                 ego_timestamp_ms,
-                association_timestamp_ms=self.last_prediction_timestamp,
             )
+
+            if self.cur_location:
+                ego_xy = (self.cur_location["x"], self.cur_location["y"])
+                before = len(shared_predictions)
+                shared_predictions = [
+                    prediction for prediction in shared_predictions
+                    if not (prediction["category"] == "vehicle"
+                            and point_in_rotated_bev_box(ego_xy, prediction["cur_location"]))
+                ]
+                excluded = before - len(shared_predictions)
+                if excluded:
+                    print(f"[{self.name}] excluded {excluded} shared vehicle reports containing ego")
 
             for prediction in shared_predictions:
                 prediction["prediction"].update(

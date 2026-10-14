@@ -8,13 +8,18 @@ import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt 
 from scipy.optimize import linear_sum_assignment
+from intelligent_vehicles.objectstore.geometry import rotated_bev_iou
+from preprocess.constants import Constants
+
+
+_MAX_NEW_S_L_IOU = 0.1
 
 
 class ObjectMap:
     def __init__(self):
         self.G = nx.Graph()
         self._tmp_seq = 0
-        self.matching_dist = 0.2
+        self.matching_dist = Constants.MATCHING_DISTANCE_M
 
     class Node:
         def __init__(
@@ -91,6 +96,20 @@ class ObjectMap:
     def remove_node(self, node_id):
         self.G.remove_node(node_id)
 
+    def _gated_assignment(self, distances):
+        """Maximize pairs within matching_dist, then minimize total distance."""
+        n_rows, n_cols = distances.shape
+        feasible = np.isfinite(distances) & (distances <= self.matching_dist)
+        costs = np.full((n_rows, n_cols + n_rows), np.inf)
+        costs[:, :n_cols] = np.where(feasible, distances, np.inf)
+        # A private dummy lets each row remain unmatched. Its cost exceeds
+        # every feasible total distance, so extra valid pairs take precedence.
+        unmatched_cost = (min(n_rows, n_cols) + 1) * (self.matching_dist + 1)
+        costs[np.arange(n_rows), n_cols + np.arange(n_rows)] = unmatched_cost
+        rows, cols = linear_sum_assignment(costs)
+        real = cols < n_cols
+        return rows[real], cols[real]
+
     def update_by_predictor(self, tracklets, mean_trajs, cov_trajs, t):
         """
         Update the prediction map using tracker outputs.
@@ -139,12 +158,9 @@ class ObjectMap:
             ])
             diff = track_positions[:, None, :] - cat2_positions[None, :, :]
             dists = np.linalg.norm(diff, axis=2)
-            rows, cols = linear_sum_assignment(dists)
+            rows, cols = self._gated_assignment(dists)
 
             for r, c in zip(rows, cols):
-                if float(dists[r, c]) > self.matching_dist:
-                    continue
-
                 track_idx = track_indices[r]
                 cat_2_node_id = cat2_ids[c]
                 node_id = tracklets[track_idx]["id"]
@@ -187,9 +203,9 @@ class ObjectMap:
 
     def match_shared_predictions(self, shared_predictions):
         """
-        Match map nodes to category-compatible incoming shared predictions by
-        minimal Euclidean distance using Hungarian assignment and
-        self.matching_dist.
+        Match category-compatible shared predictions to L and S nodes together.
+        Exclude distances above matching_dist before Hungarian assignment;
+        maximize valid pairs, then minimize their total Euclidean distance.
 
         Args:
             shared_predictions: prediction dictionaries containing canonical
@@ -238,12 +254,9 @@ class ObjectMap:
             ])
             diff = node_positions[:, None, :] - prediction_positions[None, :, :]
             dists = np.linalg.norm(diff, axis=2)
-            rows, cols = linear_sum_assignment(dists)
+            rows, cols = self._gated_assignment(dists)
 
             for r, c in zip(rows, cols):
-                if float(dists[r, c]) > self.matching_dist:
-                    continue
-
                 nid = category_node_ids[r]
                 prediction_idx = prediction_indices[c]
                 matches.append((prediction_idx, nid))
@@ -258,25 +271,19 @@ class ObjectMap:
 
         return matches, unmatched_nodes, unmatched_objects
 
-    def add_new_objects(self, ego_location, unmatched_predictions, shared_predictions, max_dist=25):
-        """
-        Add remote/broadcast objects that aren't matched to local tracks, only if
-        they are within `max_dist` meters from ego (2D distance).
+    def add_new_objects(self, ego_location, unmatched_predictions, shared_predictions, max_dist=50):
+        """Create unmatched S nodes in range with maximum rotated L IoU <= 0.1.
 
-        Args:
-            unmatched_predictions: iterable of dicts with keys:
-                - "category": str
-                - "cur_location": [x, y] or np.ndarray shape (2,)
-                - "prediction": {"timestamp": float, "pred": {...}, "cov": {...}}
-            ego_xy: (x, y) of ego in world frame (meters)
-            max_dist: max allowed distance (meters)
-
-        Returns:
-            added_ids: list of node_ids that were added (temporary IDs).
+        Compare current world-frame boxes across all categories; existing S
+        nodes are not admission references. Return the created temporary IDs.
         """
         ex, ey = ego_location["x"], ego_location["y"]
         added_ids = []
-        
+        local_boxes = [
+            (nid, data["node_data"].cur_location)
+            for nid, data in self.G.nodes(data=True)
+            if data["node_data"].type == 1
+        ]
 
         for idx in unmatched_predictions:
             # robust extraction
@@ -291,6 +298,19 @@ class ObjectMap:
 
             # distance gate
             if np.hypot(x - ex, y - ey) > max_dist: continue
+
+            max_l_iou, overlapping_l = 0.0, None
+            for local_id, local_box in local_boxes:
+                overlap = rotated_bev_iou(loc, local_box)
+                if overlap > max_l_iou:
+                    max_l_iou, overlapping_l = overlap, local_id
+            blocked = max_l_iou > _MAX_NEW_S_L_IOU
+            source = pred.get("source_vehicle", "unknown")
+            object_id = pred.get("source_object_id", p.get("id", idx))
+            print(f"S admission: source={source}/{object_id}, max_L_IoU={max_l_iou}, "
+                  f"L={overlapping_l}, decision={'blocked' if blocked else 'created'}")
+            if blocked:
+                continue
 
             # assign a temporary id and add as Category II
             nid = self._next_tmp_id()
@@ -323,6 +343,7 @@ class ObjectMap:
             
             out.append({
                 "id": nid,
+                "node_type": node.type,
                 "category": node.category,
                 "cur_location": node.cur_location,
                 "timestamp": node.last_updated,

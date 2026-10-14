@@ -39,8 +39,7 @@ class GTTracker:
             "category": track["category"],
             "current_pos": track["current_pos"].copy(),
             "tracklet": list(track["history"]),
-            # Exact observed GT poses have no tracking uncertainty or missed-frame streak.
-            "kf_gate": {"u_now": 0.0, "u_med": 0.0, "streak": 0, "med_nis": 0.0},
+            "missed_frames": 0,
         } for object_id, track in self._tracks.items()
             if len(track["history"]) >= self.min_points]
 

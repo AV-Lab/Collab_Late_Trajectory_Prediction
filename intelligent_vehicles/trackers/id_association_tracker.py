@@ -1,6 +1,6 @@
 from __future__ import annotations
 from queue import Queue
-from collections import namedtuple, deque   # <-- NEW
+from collections import namedtuple, deque
 from typing import List
 import numpy as np
 from filterpy.kalman import KalmanFilter
@@ -77,7 +77,7 @@ class IDAssociationTracker:
             "category":    tr.category,
             "current_pos": tr.current_pos.to_array(),
             "tracklet":    list(tr.history.queue),
-            "kf_gate":     tr.get_kf_gate_features()
+            "missed_frames": tr.miss_count,
         } for tr in self.active_tracklets if tr.is_confirmed]
 
     def reset(self):
@@ -108,12 +108,7 @@ class IDAssociationTracker:
             self.miss_count = 0
             self.hit_count = 1
             self.is_confirmed = self.hit_count >= MIN_CONFIRM_HITS[self.category]
-            self.trS = deque(maxlen=len_hist)        
-            self.upd_flags = deque(maxlen=len_hist) 
-            self.nis_vals = deque(maxlen=len_hist)   
-            self.predict_streak = 0                 
-
-            self._append_kf_diag(u_trace=float(np.trace(self.kf.P[:2, :2])), updated=True, nis=0.0)
+            self.upd_flags = deque([True], maxlen=len_hist)
 
         def _init_kf(self, det: dict, dt: float) -> KalmanFilter:
             kf = KalmanFilter(dim_x=6, dim_z=2)
@@ -151,23 +146,12 @@ class IDAssociationTracker:
             """
             # 1) Kalman predict (prior at this frame)
             self.kf.predict()
-            # store PRIOR values for diagnostics before the update:
-            x_prior = self.kf.x.copy()
-            P_prior = self.kf.P.copy()
-            u_trace = float(np.trace(P_prior[:2, :2]))
 
-            # 2) Compute innovation and NIS w.r.t. PRIOR (cheap, explicit)
+            # 2) Apply the update
             z = np.array([det["x"], det["y"]], dtype=float).reshape(2, 1)
-            y = z - self.kf.H @ x_prior
-            S = self.kf.H @ P_prior @ self.kf.H.T + self.kf.R
-            # numerical guard
-            S = S + 1e-9 * np.eye(2)
-            nis = float(y.T @ np.linalg.inv(S) @ y)
-
-            # 3) Apply the update
             self.kf.update(z)
        
-            # 4) EMA on size using detection as measurement
+            # 3) EMA on size using detection as measurement
             dx_m, dy_m, dz_m = float(det["dx"]), float(det["dy"]), float(det["dz"])
             if not hasattr(self, "dx"):
                 self.dx, self.dy, self.dz = dx_m, dy_m, dz_m
@@ -176,7 +160,7 @@ class IDAssociationTracker:
                 self.dy = (1.0 - alpha) * self.dy + alpha * dy_m
                 self.dz = (1.0 - alpha) * self.dz + alpha * dz_m
        
-            # 5) geometry: pose from det, size from EMA
+            # 4) geometry: pose from det, size from EMA
             self.yaw = det["yaw"]
             self.current_pos = IDAssociationTracker.BBox({
                 "x": det["x"], "y": det["y"], "z": det["z"],
@@ -184,7 +168,7 @@ class IDAssociationTracker:
                 "yaw": self.yaw
             })
        
-            # 6) bookkeeping
+            # 5) bookkeeping
             self._push_history()
             self.miss_count = 0
 
@@ -193,8 +177,7 @@ class IDAssociationTracker:
                 if self.hit_count >= MIN_CONFIRM_HITS[self.category]:
                     self.is_confirmed = True
 
-            # ---- NEW: record KF reliabilities for this frame ----
-            self._append_kf_diag(u_trace, updated=True, nis=nis)
+            self.upd_flags.append(True)
 
         # ───────────── predict-only step ───────────────
         def predict(self):
@@ -211,54 +194,13 @@ class IDAssociationTracker:
    
             self._push_history()
 
-            # ---- NEW: record KF reliabilities (no update) ----
-            u_trace = float(np.trace(self.kf.P[:2, :2]))
-            self._append_kf_diag(u_trace, updated=False, nis=None)
+            self.upd_flags.append(False)
 
         # ───────────────── helpers ────────────────────
         def _push_history(self):
             if self.history.full():
                 self.history.get()
             self.history.put(self.current_pos.to_position())
-
-        # ---- NEW: append one frame of KF reliability data ----
-        def _append_kf_diag(self, u_trace: float, updated: bool, nis: float | None):
-            self.trS.append(u_trace)
-            self.upd_flags.append(bool(updated))
-            self.nis_vals.append(float(nis) if nis is not None else None)
-            # maintain predict-only streak
-            if updated:
-                self.predict_streak = 0
-            else:
-                self.predict_streak += 1
-
-        # ---- NEW: expose a compact snapshot for gating later ----
-        def get_kf_gate_features(self, W: int = 10, L: int = 5) -> dict:
-            """
-            Returns a small dict with the features needed for the KF-only gate.
-            No decision is made here.
-            """
-            # recent traces of predicted position covariance
-            trS_hist = list(self.trS)[-W:] if len(self.trS) else []
-            u_now = trS_hist[-1] if trS_hist else float(np.trace(self.kf.P[:2,:2]))
-            U_med = float(np.median(trS_hist)) if trS_hist else u_now
-
-            # consecutive predict-only frames (streak)
-            streak = int(self.predict_streak)
-
-            # median NIS over last L update frames
-            nis_hist = [v for v in list(self.nis_vals) if v is not None]
-            nis_recent = nis_hist[-L:] if len(nis_hist) >= 1 else []
-            med_nis = float(np.median(nis_recent)) if len(nis_recent) else None
-
-            return {
-                "u_now": u_now,           # trace(S_kf^- at current frame)
-                "u_med": U_med,           # median over last W frames
-                "streak": streak,         # consecutive predicts
-                "med_nis": med_nis,       # median NIS over last L updates (None if no updates)
-                "W": W,
-                "L": L
-            }
 
     # ───────────────────── BBox helper ─────────────────────────
     class BBox:

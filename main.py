@@ -24,7 +24,6 @@ if __name__ == "__main__":
 from parser import (load_config, parse_config)
 from intelligent_vehicles.initialize import initialize_vehicles
 
-from visualization.trajectory_visualize import PredictorVisualizer 
 from evaluation import Evaluator
 from evaluation.gt_calibration import GTCalibrationExperiment
 from evaluation.evaluator import _json_value
@@ -64,7 +63,8 @@ def parse_configuration(config_path):
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Path to the YAML configuration file.")
-    parser.add_argument("--viz", action="store_true", help="Enable trajectory visualization.")
+    parser.add_argument("--viz", choices=("2d", "3d"),
+                        help="Enable top-down 2D or existing 3D trajectory visualization.")
     parser.add_argument("--output-dir", type=Path, default=OUTPUTS_DIR,
                         help="Directory for metrics and plots.")
     parser.add_argument("--channel-root", default="ipc:///tmp/prediction",
@@ -133,12 +133,13 @@ if __name__ == '__main__':
     ego_vehicle = None
     vehicles = []
     visualizer = None
+    stopped_by_viewer = False
     try:
         scenarios, ego_vehicle, vehicles = initialize_vehicles(
             configuration,
             clock_step,
             channel_root,
-            visualize=args.viz,
+            visualize=args.viz == "3d",
         )
         
         # parameters
@@ -172,9 +173,24 @@ if __name__ == '__main__':
             audit_path = control_evaluator.output_dir / "covariance_changes.jsonl"
             audit_path.parent.mkdir(parents=True, exist_ok=True)
             audit_path.write_text("")
-        visualizer = PredictorVisualizer() if args.viz else None
+        if args.viz == "2d":
+            from visualization.bev_visualize import BEVVisualizer
+            from visualization.scene import build_scene
+            from intelligent_vehicles.vehicles.dataloader import TrajDataloader
+
+            visualizer = BEVVisualizer(
+                output_dir=args.output_dir / "visualizations",
+                lidar_loader=TrajDataloader.load_lidar_points,
+                vehicle_names=configuration["vehicles"],
+            )
+        elif args.viz == "3d":
+            from visualization.trajectory_visualize import PredictorVisualizer
+
+            visualizer = PredictorVisualizer()
      
         for scenario, (number_of_vehicles, sim_time) in scenarios.items():
+            if args.viz == "2d":
+                visualizer.reset()
             # first preload all data for scenario
             ego_vehicle.reset()
             res = ego_vehicle.loader.preload_data(scenario)
@@ -204,13 +220,13 @@ if __name__ == '__main__':
                 response = ego_vehicle.run(t_global, scenario)
                 if response is not None:
                     attach_evaluation_timestamps(response, ego_vehicle)
-                    if control_evaluator is None:
-                        forecasts = evaluator.compute(response)
-                    else:
+                    associations = None
+                    if args.viz == "2d" or control_evaluator is not None:
                         associations = match_predictions(
                             response["predictions"], response["trajectories"], evaluator.iou_threshold,
                         )
-                        forecasts = evaluator.compute(response, associations=associations)
+                    forecasts = evaluator.compute(response, associations=associations)
+                    if control_evaluator is not None:
                         controlled = calibration_experiment.build_response(
                             response, associations[0],
                         )
@@ -220,7 +236,19 @@ if __name__ == '__main__':
                                 audit.update(scenario=scenario, frame_index=prediction_frame_index)
                                 audit_file.write(json.dumps(_json_value(audit), allow_nan=False) + "\n")
                 
-                    if visualizer is not None:
+                    if args.viz == "2d":
+                        scene = build_scene(
+                            scenario, response["timestamp_ms"], ego_vehicle.name,
+                            {ego_vehicle.name: response},
+                            associations=associations,
+                            received_vehicle_poses=getattr(ego_vehicle, "received_vehicle_poses", {}),
+                            iou_threshold=evaluator.iou_threshold,
+                        )
+                        if not visualizer.update(scene):
+                            stopped_by_viewer = True
+                            evaluator.run_metadata["stopped_by_viewer"] = True
+                            break
+                    elif visualizer is not None:
                         visualizer.visualize_forecasts(
                             point_cloud=response["point_cloud"],
                             ego_pose=response["ego_state"],
@@ -240,6 +268,8 @@ if __name__ == '__main__':
             evaluator.end_scenario()
             if control_evaluator is not None:
                 control_evaluator.end_scenario()
+            if args.viz == "2d" and visualizer.closed:
+                break
         if control_evaluator is None:
             evaluator.evaluate()
         else:

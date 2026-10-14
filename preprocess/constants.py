@@ -6,6 +6,10 @@ class Constants:
     YAW_IN_DEGREES = False
     KEEP_RADIUS_M = 50.0
 
+    # Association and evaluation defaults
+    MATCHING_DISTANCE_M = 0.2
+    EVALUATION_IOU_THRESHOLD = 0.7
+
     # DeepAccident
     DEEPACCIDENT_CAMERA_SENSORS = [
         "Camera_FrontLeft",
