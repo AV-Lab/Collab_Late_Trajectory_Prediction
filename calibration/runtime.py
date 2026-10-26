@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from calibration.motion import MOTION_DEFINITION, MOTION_TAGS
+from calibration.estimators.motion import MOTION_DEFINITION, MOTION_TAGS
 
 
 def file_identity(path):
@@ -80,12 +80,20 @@ class Certificate:
         _number(self.inference.get("pred_len"), "inference.pred_len", integer=True)
         _number(self.inference.get("sample_fps"), "inference.sample_fps")
         self.method = document.get("estimator")
-        if self.method == "motion_bootstrap_raw_moment":
+        if self.needs_motion:
             self._load_motion_profiles(document)
         else:
             self.profiles = _certificate_profiles(document, "certificate", self.inference)
         self.certificate_id = hashlib.sha256(json.dumps(
             document, sort_keys=True, allow_nan=False).encode("utf-8")).hexdigest()
+
+    @property
+    def needs_motion(self):
+        return self.method in ("motion_bootstrap_raw_moment", "motion_covariance_raw_moment")
+
+    @property
+    def needs_covariance_for_bounds(self):
+        return self.method in ("bootstrap_raw_moment", "motion_covariance_raw_moment")
 
     @classmethod
     def from_file(cls, path, checkpoint_path=None, expected=None):
@@ -152,6 +160,25 @@ class Certificate:
         """Return native expected squared-error bounds in m², or None."""
         if self.method == "motion_bootstrap_raw_moment":
             return self.trajectory_bounds(category, [horizon_ms], None, motion_tag)[0]
+        if self.method == "motion_covariance_raw_moment":
+            if (not isinstance(category, str) or not isinstance(motion_tag, str)
+                    or not isinstance(horizon_ms, (int, np.integer))
+                    or isinstance(horizon_ms, (bool, np.bool_))):
+                return None
+            entry = self._covariance_profiles.get((category, motion_tag, int(horizon_ms)))
+            if entry is None:
+                return None
+            try:
+                with np.errstate(over="raise", invalid="raise"):
+                    covariance = _covariance(covariance if grouping_covariance is None else grouping_covariance)
+                    trace = float(np.trace(covariance))
+                    if not np.isfinite(trace):
+                        return None
+                    index = int(np.searchsorted(entry["cutpoints"], trace, side="right"))
+                    selected = entry["bins"][index] or entry["parent"]
+                    return dict(selected) if selected is not None else None
+            except (ValueError, TypeError, OverflowError, FloatingPointError, np.linalg.LinAlgError):
+                return None
         factors = self.factors(category, horizon_ms, covariance, grouping_covariance)
         if factors is None:
             return None
@@ -173,7 +200,7 @@ class Certificate:
             covariances = list(covariances)
             if len(covariances) != len(horizons):
                 raise ValueError("Covariances must match the native horizon count.")
-            return [self.bounds(category, horizon, covariance)
+            return [self.bounds(category, horizon, covariance, motion_tag=motion_tag)
                     for horizon, covariance in zip(horizons, covariances)]
         category_index = self._category_index.get(category) if isinstance(category, str) else None
         tag_index = self._motion_index.get(motion_tag) if isinstance(motion_tag, str) else None
@@ -193,10 +220,12 @@ class Certificate:
 
     def _load_motion_profiles(self, document):
         """Validate the frozen complete table before constructing dense lookup arrays."""
-        if type(document.get("schema_version")) is not int or document["schema_version"] != 3:
-            raise ValueError("Motion certificates require schema_version=3.")
-        if document.get("method") != "motion_bootstrap" or document.get("risk_unit") != "m2":
-            raise ValueError("Motion certificates require method=motion_bootstrap and risk_unit=m2.")
+        conditioned = self.method == "motion_covariance_raw_moment"
+        schema, method = (4, "motion_covariance") if conditioned else (3, "motion_bootstrap")
+        if type(document.get("schema_version")) is not int or document["schema_version"] != schema:
+            raise ValueError(f"Motion certificates require schema_version={schema}.")
+        if document.get("method") != method or document.get("risk_unit") != "m2":
+            raise ValueError(f"Motion certificates require method={method} and risk_unit=m2.")
         if document.get("motion") != MOTION_DEFINITION:
             raise ValueError("Certificate motion definition differs from the runtime categorizer.")
         _number(self.inference.get("obs_len"), "inference.obs_len", integer=True)
@@ -228,6 +257,9 @@ class Certificate:
             raise ValueError("Motion certificate settings must be a dictionary.")
         minimum = settings.get("min_fit_rows")
         _number(minimum, "settings.min_fit_rows", integer=True)
+        if conditioned:
+            _number(settings.get("covariance_bins"), "settings.covariance_bins", integer=True)
+            self._covariance_profiles = {}
         seen = set()
         for index, profile in enumerate(profiles):
             path = f"certificate.profiles[{index}]"
@@ -247,29 +279,12 @@ class Certificate:
             if key in seen:
                 raise ValueError(f"{path}: duplicate category/motion/horizon")
             seen.add(key)
-            count = profile.get("n_valid")
-            _number(count, path + ".n_valid", integer=True, inclusive=True)
-            usable = profile.get("usable_for_gate")
-            _boolean(usable, path + ".usable_for_gate")
-            if not usable:
-                if (count >= minimum or profile.get("status") != "insufficient_fit_samples"
-                        or any(profile.get(name) is not None
-                               for name in ("M_hat", "radius", "lower", "upper"))):
-                    raise ValueError(f"{path}: inconsistent unavailable profile")
+            bounds = _motion_risk(profile, path, minimum)
+            if conditioned:
+                self._covariance_profiles[profile["category"], tag, horizons[step - 1]] = (
+                    _motion_covariance_profile(profile, path, minimum, settings["covariance_bins"], bounds))
+            if bounds is None:
                 continue
-            if count < minimum or profile.get("status") != "approximate_group_moment":
-                raise ValueError(f"{path}: usable profile lacks minimum support or valid status")
-            moment = _moment(profile.get("M_hat"), path + ".M_hat")
-            radius = profile.get("radius")
-            _number(radius, path + ".radius", inclusive=True)
-            bounds = {"lower": profile.get("lower"), "upper": profile.get("upper")}
-            if not valid_bounds(bounds):
-                raise ValueError(f"{path}: invalid squared-error bounds")
-            trace = float(np.trace(moment))
-            expected = {"lower": max(0., trace - 2 * radius), "upper": trace + 2 * radius}
-            if any(not math.isclose(bounds[name], expected[name], rel_tol=1e-10, abs_tol=1e-12)
-                   for name in expected):
-                raise ValueError(f"{path}: bounds disagree with moment and radius")
             self._lower[key], self._upper[key] = bounds["lower"], bounds["upper"]
             self._available[key] = True
         if len(seen) != np.prod(shape):
@@ -279,6 +294,59 @@ class Certificate:
         if usable_count != int(self._available.sum()):
             raise ValueError("usable_profile_count disagrees with motion profiles.")
         self.profiles = {}
+
+
+def _motion_risk(entry, path, minimum):
+    """Validate one direct parent/bin moment and its stored squared-error risk."""
+    count = entry.get("n_valid")
+    _number(count, path + ".n_valid", integer=True, inclusive=True)
+    usable = entry.get("usable_for_gate")
+    _boolean(usable, path + ".usable_for_gate")
+    if not usable:
+        if (count >= minimum or entry.get("status") != "insufficient_fit_samples"
+                or any(entry.get(name) is not None for name in ("M_hat", "radius", "lower", "upper"))):
+            raise ValueError(f"{path}: inconsistent unavailable profile")
+        return None
+    if count < minimum or entry.get("status") != "approximate_group_moment":
+        raise ValueError(f"{path}: usable profile lacks minimum support or valid status")
+    moment = _moment(entry.get("M_hat"), path + ".M_hat")
+    radius = entry.get("radius")
+    _number(radius, path + ".radius", inclusive=True)
+    bounds = {"lower": entry.get("lower"), "upper": entry.get("upper")}
+    if not valid_bounds(bounds):
+        raise ValueError(f"{path}: invalid squared-error bounds")
+    trace = float(np.trace(moment))
+    expected = {"lower": max(0., trace - 2 * radius), "upper": trace + 2 * radius}
+    if any(not math.isclose(bounds[name], expected[name], rel_tol=1e-10, abs_tol=1e-12)
+           for name in expected):
+        raise ValueError(f"{path}: bounds disagree with moment and radius")
+    return {name: float(value) for name, value in bounds.items()}
+
+
+def _motion_covariance_profile(profile, path, minimum, requested_bins, parent):
+    cutpoints = profile.get("uncertainty_cutpoints")
+    if not isinstance(cutpoints, list) or len(cutpoints) >= requested_bins:
+        raise ValueError(f"{path}.uncertainty_cutpoints: invalid requested bin count")
+    for index, value in enumerate(cutpoints):
+        _number(value, f"{path}.uncertainty_cutpoints[{index}]")
+        if index and value <= cutpoints[index - 1]:
+            raise ValueError(f"{path}.uncertainty_cutpoints: must be strictly increasing")
+    bins = profile.get("bins")
+    if not isinstance(bins, list) or len(bins) != len(cutpoints) + 1:
+        raise ValueError(f"{path}.bins: requires one bin per interval")
+    indexed = []
+    for index, entry in enumerate(bins):
+        location = f"{path}.bins[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{location}: must be a dictionary")
+        bin_index = entry.get("uncertainty_bin")
+        _number(bin_index, location + ".uncertainty_bin", integer=True, inclusive=True)
+        if bin_index != index:
+            raise ValueError(f"{location}: bins must be complete and ordered")
+        indexed.append(_motion_risk(entry, location, minimum))
+    if sum(item["n_valid"] for item in bins) != profile["n_valid"]:
+        raise ValueError(f"{path}: bin counts disagree with parent count")
+    return {"parent": parent, "cutpoints": cutpoints, "bins": indexed}
 
 
 def _moment(raw, path):

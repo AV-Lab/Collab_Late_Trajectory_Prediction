@@ -8,7 +8,7 @@ __pycache__/
 
 plots/
 detections/
-preprocess/preprocessed/
+data/preprocess/preprocessed/
 
 # Generated evaluation outputs
 /outputs/

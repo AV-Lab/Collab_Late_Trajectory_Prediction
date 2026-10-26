@@ -5,7 +5,7 @@ import yaml
 SUPPORTED_VEHICLE_TYPES = {"basic", "aggregating", "broadcasting", "hybrid"}
 SUPPORTED_DETECTORS = {"gt", "gt_occ", "centerpoint"}
 SUPPORTED_PREDICTOR_LAYOUTS = {"track", "scene"}
-SUPPORTED_TRACKERS = {"gt", "id_association", "metric_association"}
+SUPPORTED_TRACKERS = {"gt", "id_association", "metric_association", "distance_association"}
 SUPPORTED_FUSION_TYPES = {"gp", "gp_vector", "linear_fusion", "linear_fusion_cross"}
 SPLITS = {"train", "valid", "test"}
 
@@ -34,19 +34,16 @@ def _config_bool(value, path):
 
 
 def _validate_categories(vehicle_key, vehicle):
-    """Validate each category's alignment, gate and fusion independently."""
+    """Validate each category's alignment and fusion independently."""
     prefix = f"vehicles.{vehicle_key}"
-    for name in ("alignment", "gates", "fusion"):
+    for name in ("alignment", "fusion"):
         if name in vehicle:
             raise ValueError(f"{prefix}.{name}: move settings into category_l and category_s")
-    gate_defaults = {
-        "consensus": {"threshold": 2.0, "min_predictions": 3, "min_overlap": 0.5},
-    }
     for category in ("category_l", "category_s"):
         path = f"{prefix}.{category}"
         if category not in vehicle:
             raise ValueError(f"{path}: required")
-        allowed = {"alignment", "gate", "fusion"}
+        allowed = {"alignment", "fusion"}
         if category == "category_s":
             allowed.add("enabled")
         branch = _config_block(vehicle[category], path, allowed)
@@ -61,24 +58,6 @@ def _validate_categories(vehicle_key, vehicle):
         alignment.setdefault("min_points", 10)
         _config_bool(alignment["align"], path + ".alignment.align")
         _config_number(alignment["min_points"], path + ".alignment.min_points", integer=True)
-
-        gate = branch.setdefault("gate", {"type": "none"})
-        gate_path = path + ".gate"
-        _config_block(gate, gate_path, {"type", *gate_defaults["consensus"]})
-        kind = gate.get("type", "none")
-        supported = {"none"} if category == "category_l" else {"none", "consensus"}
-        if not isinstance(kind, str) or kind not in supported:
-            raise ValueError(f"{gate_path}.type: must be one of {sorted(supported)}")
-        defaults = gate_defaults.get(kind, {})
-        _config_block(gate, gate_path, {"type", *defaults})
-        gate.setdefault("type", "none")
-        for name, default in defaults.items():
-            gate.setdefault(name, default)
-        if kind == "consensus":
-            _config_number(gate["threshold"], gate_path + ".threshold")
-            _config_number(gate["min_overlap"], gate_path + ".min_overlap", inclusive=True)
-            _config_number(gate["min_predictions"], gate_path + ".min_predictions",
-                           minimum=3, inclusive=True, integer=True)
 
         fusion_path = path + ".fusion"
         if "fusion" not in branch:

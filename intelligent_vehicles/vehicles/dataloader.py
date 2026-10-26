@@ -8,12 +8,41 @@ Created on Sun Mar 16 17:30:27 2025
 
 
 import os
+import operator
 import pickle
 import cv2
 import numpy as np
 
 from collections import namedtuple
+from collections.abc import Sequence
 position = namedtuple('Position', ['x', 'y', 'z','yaw'])
+
+
+class _TrajectoryView(Sequence):
+    """Read-only window into one continuous, immutable GT trajectory."""
+
+    __slots__ = ("_points", "_start", "_stop")
+
+    def __init__(self, points, start, stop):
+        self._points, self._start, self._stop = points, start, stop
+
+    def __len__(self):
+        return self._stop - self._start
+
+    def __iter__(self):
+        return (self._points[index] for index in range(self._start, self._stop))
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            return [self._points[self._start + index]
+                    for index in range(*key.indices(len(self)))]
+        index = operator.index(key)
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError("trajectory index out of range")
+        return self._points[self._start + index]
+
 
 class TrajDataloader:
     """
@@ -190,55 +219,47 @@ class TrajDataloader:
         return True
 
     def _compute_trajectories(self):
+        """Share full world-frame segments across per-frame past/future views.
+
+        An absence in a selected frame ends a segment. Past includes current;
+        future starts at the next frame. Appearances without future are omitted.
         """
-        Build per-object trajectories in **world frame** and store them into
-        self.loaded_frames[t]['trajectories'].
-    
-            past   : consecutive list[position]  (ts <= t)
-            current_state : np.ndarray[8]  (x,y,z,l,w,h,yaw,occlusion)
-            future : consecutive list[position]  (ts > t)
-        """
-        objects_by_frame = []
-        for t in self.timestamps:
-            labels = self.loaded_frames[t]['labels']
-            self.loaded_frames[t]['labels_world'] = labels
-            objects_by_frame.append({det['obj_id']: det for det in labels})
+        frames, segments, latest = [], [], {}
+        for frame_index, timestamp in enumerate(self.timestamps):
+            frame = self.loaded_frames[timestamp]
+            labels = frame['labels']
+            frame['labels_world'] = labels
+            objects = {obj['obj_id']: obj for obj in labels}
+            current = []
+            for oid, obj in objects.items():
+                previous_index, segment_index = latest.get(oid, (-2, None))
+                if previous_index != frame_index - 1:
+                    segment_index = len(segments)
+                    segments.append([])
+                points = segments[segment_index]
+                current.append((oid, obj, segment_index, len(points)))
+                points.append(position(obj['x'], obj['y'], obj['z'], obj['yaw']))
+                latest[oid] = (frame_index, segment_index)
+            frames.append(current)
+        segments = [tuple(points) for points in segments]
 
-        for frame_index, t in enumerate(self.timestamps):
-            frame_traj = {}
-            current_objects = objects_by_frame[frame_index]
-
-            for oid, current in current_objects.items():
-                past = []
-                for index in range(frame_index, -1, -1):
-                    obj = objects_by_frame[index].get(oid)
-                    if obj is None:
-                        break
-                    past.append(position(obj['x'], obj['y'], obj['z'], obj['yaw']))
-                past.reverse()
-
-                future = []
-                for index in range(frame_index + 1, len(self.timestamps)):
-                    obj = objects_by_frame[index].get(oid)
-                    if obj is None:
-                        break
-                    future.append(position(obj['x'], obj['y'], obj['z'], obj['yaw']))
-
-                if not future:
+        for timestamp, objects in zip(self.timestamps, frames):
+            trajectories = {}
+            for oid, current, segment_index, index in objects:
+                points = segments[segment_index]
+                if index + 1 == len(points):
                     continue
-
-                frame_traj[oid] = {
+                trajectories[oid] = {
                     'category': current['label'],
-                    'past': past,
+                    'past': _TrajectoryView(points, 0, index + 1),
                     'current_state': np.array([
                         current['x'], current['y'], current['z'],
                         current['length'], current['width'], current['height'],
                         current['yaw'], current['occ_l1'],
                     ], dtype=np.float32),
-                    'future': future,
+                    'future': _TrajectoryView(points, index + 1, len(points)),
                 }
-
-            self.loaded_frames[t]['trajectories'] = frame_traj
+            self.loaded_frames[timestamp]['trajectories'] = trajectories
 
         
 

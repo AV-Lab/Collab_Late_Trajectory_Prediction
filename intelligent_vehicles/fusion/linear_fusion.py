@@ -342,28 +342,29 @@ class LinearFusion:
 
     def _evaluate_interval(self, times, prepared, interval):
         sources = interval["source_ids"]
-        if self.max_mean_cov_trace_m2 is not None:
-            interval.update(available_source_ids=list(sources),
-                            max_mean_cov_trace_m2=self.max_mean_cov_trace_m2,
-                            mean_cov_trace_by_source={}, excluded_sources=[])
-            try:
-                with np.errstate(over="raise", invalid="raise"):
-                    traces = {source: float(np.mean([
-                        np.trace(prepared[source][t]["shared"].covariance) for t in times
-                    ])) for source in sources[1:]}
-            except FloatingPointError:
-                interval["reason"] = "numerical_covariance_failure"
-                return False
-            excluded = [source for source, trace in traces.items()
-                        if trace > self.max_mean_cov_trace_m2]
-            sources = [source for source in sources if source not in excluded]
-            interval.update(source_ids=sources, mean_cov_trace_by_source=traces,
-                            excluded_sources=[{"source_id": source,
-                                               "reason": "mean_cov_trace_exceeded"}
-                                              for source in excluded])
-            if len(sources) == 1:
-                interval.update(weights={self.ego_source_id: 1.}, reason="all_sharers_filtered")
-                return False
+        # Covariance filter temporarily disabled for certificate-only gating.
+        # if self.max_mean_cov_trace_m2 is not None:
+        #     interval.update(available_source_ids=list(sources),
+        #                     max_mean_cov_trace_m2=self.max_mean_cov_trace_m2,
+        #                     mean_cov_trace_by_source={}, excluded_sources=[])
+        #     try:
+        #         with np.errstate(over="raise", invalid="raise"):
+        #             traces = {source: float(np.mean([
+        #                 np.trace(prepared[source][t]["shared"].covariance) for t in times
+        #             ])) for source in sources[1:]}
+        #     except FloatingPointError:
+        #         interval["reason"] = "numerical_covariance_failure"
+        #         return False
+        #     excluded = [source for source, trace in traces.items()
+        #                 if trace > self.max_mean_cov_trace_m2]
+        #     sources = [source for source in sources if source not in excluded]
+        #     interval.update(source_ids=sources, mean_cov_trace_by_source=traces,
+        #                     excluded_sources=[{"source_id": source,
+        #                                        "reason": "mean_cov_trace_exceeded"}
+        #                                       for source in excluded])
+        #     if len(sources) == 1:
+        #         interval.update(weights={self.ego_source_id: 1.}, reason="all_sharers_filtered")
+        #         return False
         rows = interval["risk_per_point"]
         for t in times:
             ego = prepared[sources[1]][t]

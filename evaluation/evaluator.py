@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from evaluation.paths import OUTPUTS_DIR, RUNTIME_TMP_DIR
-from preprocess.constants import Constants
+from data.preprocess.constants import Constants
 
 import numpy as np
 
@@ -313,7 +313,8 @@ class Evaluator:
 
         self.overall = self._make_totals()
         self.by_category = defaultdict(self._make_totals)
-        self.by_source = {name: self._make_totals() for name in self.SOURCE_NAMES}
+        self.by_source = self._make_source_totals()
+        self.by_category_sources = defaultdict(self._make_source_totals)
         self.input_calibration_totals = defaultdict(self._make_totals)
         self.input_alignment_exclusions = defaultdict(Counter)
         self.scenarios = []
@@ -322,6 +323,8 @@ class Evaluator:
         self._scenario_name = None
         self._scenario = None
         self._scenario_by_source = None
+        self._scenario_by_category = None
+        self._scenario_by_category_sources = None
         if self.output_dir == OUTPUTS_DIR and self.generate_plots:
             # The legacy caller relies on construction starting a fresh run.
             # Isolated vehicle reports must never clear another run's files.
@@ -332,12 +335,17 @@ class Evaluator:
     def _make_totals(self):
         return _new_totals(self._uncertainty_options)
 
+    def _make_source_totals(self):
+        return {name: self._make_totals() for name in self.SOURCE_NAMES}
+
     def begin_scenario(self, scenario_name):
         if self._scenario is not None:
             raise RuntimeError("The previous scenario has not been ended.")
         self._scenario_name = str(scenario_name)
         self._scenario = self._make_totals()
-        self._scenario_by_source = {name: self._make_totals() for name in self.SOURCE_NAMES}
+        self._scenario_by_source = self._make_source_totals()
+        self._scenario_by_category = defaultdict(self._make_totals)
+        self._scenario_by_category_sources = defaultdict(self._make_source_totals)
 
     def _sequence_to_array(self, sequence, max_steps, reverse=False):
         if sequence is None:
@@ -348,8 +356,11 @@ class Evaluator:
             keys = keys[-max_steps:] if reverse else keys[:max_steps]
             values = [sequence[key] for key in keys]
         else:
-            values = list(sequence)
-            values = values[-max_steps:] if reverse else values[:max_steps]
+            try:
+                values = sequence[-max_steps:] if reverse else sequence[:max_steps]
+            except TypeError:
+                values = list(sequence)
+                values = values[-max_steps:] if reverse else values[:max_steps]
 
         rows = []
         for value in values:
@@ -585,37 +596,46 @@ class Evaluator:
 
         matched_by_source = defaultdict(int)
         stale_by_source = defaultdict(int)
-        for _, prediction_index in matches:
+        for gt_id, prediction_index in matches:
+            category = str(ground_truth[gt_id]["category"]).lower()
             for source, _ in prediction_sources[prediction_index]:
-                matched_by_source[source] += 1
                 prediction_id = predictions[prediction_index]["id"]
-                if prediction_id in local_streak and local_streak[prediction_id] > 0:
-                    stale_by_source[source] += 1
+                for key in ((None, source), (category, source)):
+                    matched_by_source[key] += 1
+                    if prediction_id in local_streak and local_streak[prediction_id] > 0:
+                        stale_by_source[key] += 1
 
         false_by_source = defaultdict(int)
         for prediction_index in false_indices:
+            category = str(predictions[prediction_index]["category"]).lower()
             for source, _ in prediction_sources[prediction_index]:
-                false_by_source[source] += 1
+                for key in ((None, source), (category, source)):
+                    false_by_source[key] += 1
 
+        gt_by_category = Counter(str(obj["category"]).lower() for obj in ground_truth.values())
         available_sources = {
-            source
-            for pairs in prediction_sources.values()
+            (category, source)
+            for index, pairs in prediction_sources.items()
             for source, _ in pairs
+            for category in (None, str(predictions[index]["category"]).lower())
         }
-        for source in available_sources:
-            matched_count = matched_by_source[source]
-            for totals in (self.by_source[source], self._scenario_by_source[source]):
+        for category, source in available_sources:
+            groups = ((self.by_source, self._scenario_by_source) if category is None else
+                      (self.by_category_sources[category], self._scenario_by_category_sources[category]))
+            num_gt = len(ground_truth) if category is None else gt_by_category[category]
+            matched_count = matched_by_source[category, source]
+            for totals in (group[source] for group in groups):
                 totals["frames_seen"] += 1
                 if matched_count:
                     totals["frames_with_matches"] += 1
                 self._add_counts(
                     totals,
-                    num_gt=len(ground_truth),
+                    num_gt=num_gt,
                     num_matched=matched_count,
-                    num_missed=len(ground_truth) - matched_count,
-                    num_raw_unmatched=false_by_source[source],
-                    num_fp=false_by_source[source],
-                    num_stale_matched=stale_by_source[source],
+                    num_missed=num_gt - matched_count,
+                    num_raw_unmatched=false_by_source[category, source],
+                    num_fp=false_by_source[category, source],
+                    num_stale_matched=stale_by_source[category, source],
                 )
 
         self.overall["frames_seen"] += 1
@@ -644,6 +664,7 @@ class Evaluator:
         )
 
         categories_in_frame = set()
+        matched_categories = set()
         matched_visualization = []
         missed_visualization = []
         false_visualization = []
@@ -654,9 +675,11 @@ class Evaluator:
             prediction = predictions[prediction_index]
             category = str(gt_object["category"]).lower()
             categories_in_frame.add(category)
-            self._add_counts(self.by_category[category], num_gt=1, num_matched=1)
-            if prediction["id"] in local_streak and local_streak[prediction["id"]] > 0:
-                self._add_counts(self.by_category[category], num_stale_matched=1)
+            matched_categories.add(category)
+            for totals in (self.by_category[category], self._scenario_by_category[category]):
+                self._add_counts(totals, num_gt=1, num_matched=1)
+                if prediction["id"] in local_streak and local_streak[prediction["id"]] > 0:
+                    self._add_counts(totals, num_stale_matched=1)
 
             ego, fused, primary, has_ego, has_fused = self._select_predictions(prediction)
             primary_source = (
@@ -684,7 +707,8 @@ class Evaluator:
             if primary_values is not None:
                 self._add_forecast(self.overall, primary_values)
                 self._add_forecast(self._scenario, primary_values)
-                self._add_forecast(self.by_category[category], primary_values)
+                for totals in (self.by_category[category], self._scenario_by_category[category]):
+                    self._add_forecast(totals, primary_values)
                 label_metrics.append({
                     "id": gt_id,
                     "category": category,
@@ -706,6 +730,8 @@ class Evaluator:
                 if source_values is not None:
                     self._add_forecast(self.by_source[source], source_values)
                     self._add_forecast(self._scenario_by_source[source], source_values)
+                    self._add_forecast(self.by_category_sources[category][source], source_values)
+                    self._add_forecast(self._scenario_by_category_sources[category][source], source_values)
                     if source in ("category_I_ego", "no_fusion"):
                         vehicle = prediction.get("ego_vehicle", self.vehicle_label or "ego")
                         self._add_forecast(self.input_calibration_totals[(vehicle, "ego")], source_values)
@@ -742,7 +768,8 @@ class Evaluator:
             gt_object = ground_truth[gt_id]
             category = str(gt_object["category"]).lower()
             categories_in_frame.add(category)
-            self._add_counts(self.by_category[category], num_gt=1, num_missed=1)
+            for totals in (self.by_category[category], self._scenario_by_category[category]):
+                self._add_counts(totals, num_gt=1, num_missed=1)
             missed_visualization.append({
                 "id": gt_id,
                 "category": category,
@@ -761,11 +788,8 @@ class Evaluator:
             prediction = predictions[prediction_index]
             category = str(prediction["category"]).lower()
             categories_in_frame.add(category)
-            self._add_counts(
-                self.by_category[category],
-                num_raw_unmatched=1,
-                num_fp=1,
-            )
+            for totals in (self.by_category[category], self._scenario_by_category[category]):
+                self._add_counts(totals, num_raw_unmatched=1, num_fp=1)
             _, _, primary, _, _ = self._select_predictions(prediction)
             false_visualization.append({
                 "id": prediction["id"],
@@ -784,7 +808,9 @@ class Evaluator:
             })
 
         for category in categories_in_frame:
-            self.by_category[category]["frames_seen"] += 1
+            for totals in (self.by_category[category], self._scenario_by_category[category]):
+                totals["frames_seen"] += 1
+                totals["frames_with_matches"] += int(category in matched_categories)
         return {
             "matched": matched_visualization,
             "missed": missed_visualization,
@@ -798,6 +824,8 @@ class Evaluator:
         scenario_summary = _summary(self._scenario)
         scenario_summary["scenario"] = self._scenario_name
         scenario_summary.update(self._fusion_summary(self._scenario, self._scenario_by_source))
+        scenario_summary["by_category"] = self._category_summary(
+            self._scenario_by_category, self._scenario_by_category_sources)
         self.scenarios.append(scenario_summary)
 
         print(
@@ -808,6 +836,8 @@ class Evaluator:
 
         self._scenario = None
         self._scenario_by_source = None
+        self._scenario_by_category = None
+        self._scenario_by_category_sources = None
         self._scenario_name = None
         return scenario_summary
 
@@ -856,6 +886,12 @@ class Evaluator:
             "ego_observed_pairing": "Common capped forecast timestamps checked per matched Category I object.",
         }
 
+    def _category_summary(self, by_category, by_category_sources):
+        return {
+            category: {**_summary(totals), **self._fusion_summary(totals, by_category_sources[category])}
+            for category, totals in sorted(by_category.items())
+        }
+
     def evaluate(self, *, gt_control=None, print_results=True):
         if self._scenario is not None:
             raise RuntimeError("end_scenario() must be called before evaluate().")
@@ -865,10 +901,7 @@ class Evaluator:
             "metadata": self._metadata(),
             "overall": _summary(self.overall),
             **self._fusion_summary(self.overall, self.by_source),
-            "by_category": {
-                category: _summary(totals)
-                for category, totals in sorted(self.by_category.items())
-            },
+            "by_category": self._category_summary(self.by_category, self.by_category_sources),
             "scenarios": list(self.scenarios),
             "distributions": {
                 name: list(values) for name, values in self.distributions.items()
@@ -1034,7 +1067,17 @@ class Evaluator:
 
         category_rows = list(results["by_category"].items())
         if self.print_by_category and category_rows:
-            self._print_metric_tables("PER CATEGORY", category_rows)
+            rows = []
+            for category, values in category_rows:
+                rows.extend((f"{category}: {label}", group) for label, group in (
+                    ("ego before", values["ego_observed_before"]),
+                    ("ego after", values["ego_observed_after"]),
+                    ("L before", values["by_source"]["category_I_ego"]),
+                    ("L after", values["by_source"]["category_I_fused"]),
+                    ("S", values["by_source"]["category_II_fused"]),
+                    ("overall", values),
+                ))
+            self._print_metric_tables("PER CATEGORY", rows)
             self._print_uncertainty_table("PER CATEGORY", category_rows)
 
         calibration_plot = results.get("plots", {}).get("calibration")

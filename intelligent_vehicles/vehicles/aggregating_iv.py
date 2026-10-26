@@ -10,11 +10,10 @@ Aggregating Intelligent Vehicle:
 """
 
 from . import BasicIV
-from intelligent_vehicles.listener import Listener
+from intelligent_vehicles.communication.listener import Listener
 from intelligent_vehicles.fusion.gp_fusion import GPFuser, GPFuserVector
 from intelligent_vehicles.fusion.linear_fusion import LinearFusion
-from intelligent_vehicles.alignment import PredictionTimeAligner
-from intelligent_vehicles.gates import ConsensusGate
+from intelligent_vehicles.fusion.alignment import PredictionTimeAligner
 from intelligent_vehicles.objectstore.geometry import point_in_rotated_bev_box
 from evaluation.paths import RUNTIME_TMP_DIR
 from contextlib import ExitStack
@@ -85,8 +84,6 @@ class AggregatingIV(BasicIV):
             "category_s": (local_fuser if same_gp else self._create_fuser(shared_config))
                           if self.category_s_enabled else None,
         }
-        self.consensus_gate = self._create_gate(category_config["category_s"].get("gate", {})) \
-                              if self.category_s_enabled else None
         self.aligners = {
             category: PredictionTimeAligner(**config.get("alignment", {}))
             for category, config in category_config.items()
@@ -138,27 +135,6 @@ class AggregatingIV(BasicIV):
                                      gate_ratio=config.get("gate_ratio", 1.0))
         raise ValueError(f"Unsupported fusion type: {config['type']}")
 
-    @staticmethod
-    def _create_gate(config):
-        options = dict(config)
-        kind = options.pop("type", "none")
-        if kind == "none":
-            return None
-        if kind == "consensus":
-            options.setdefault("min_overlap", 0.5)
-            return ConsensusGate(**options)
-        raise ValueError(f"Unsupported gate type: {kind}")
-
-    def _apply_gates(self, pools):
-        """Apply Category S consensus and preserve Category L and map order."""
-        local = {node_id: values for node_id, values in pools.items() if values[3] == 1}
-        shared = {node_id: values for node_id, values in pools.items() if values[3] == 2} \
-                 if getattr(self, "category_s_enabled", True) else {}
-        if self.consensus_gate is not None:
-            shared = self.consensus_gate.apply(shared)
-        selected = {**local, **shared}
-        return {node_id: selected[node_id] for node_id in pools if node_id in selected}
-
     def fuse_pools(self, ego_ts, pools):
         """Time complete category batches, including worker dispatch and wait."""
         fused = {}
@@ -209,10 +185,9 @@ class AggregatingIV(BasicIV):
         self.last_prediction_timestamp = pred_ts_ms
         if getattr(self, "category_s_enabled", True):
             self.prediction_map.remove_unrefreshed_category_II_nodes()
-        preds_with_pools = self.prediction_map.extract_pools()
-
-        # Consensus owns filtering and its decision records.
-        pools = self._apply_gates(preds_with_pools)
+        pools = {node_id: values
+                 for node_id, values in self.prediction_map.extract_pools().items()
+                 if values[3] == 1 or (values[3] == 2 and getattr(self, "category_s_enabled", True))}
 
         # Preserve the supplied inputs for evaluation before clearing pools.
         fusion_inputs = {node_id: deepcopy(values[2])

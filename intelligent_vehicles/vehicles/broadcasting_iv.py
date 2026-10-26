@@ -8,7 +8,7 @@ Created on Mon Jul  8 14:11:22 2024
 
 
 from . import BasicIV 
-from intelligent_vehicles.broadcaster import Broadcaster
+from intelligent_vehicles.communication.broadcaster import Broadcaster
 from evaluation.paths import MESSAGE_SIZE_TMP_DIR
 import time
 

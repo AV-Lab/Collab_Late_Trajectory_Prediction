@@ -6,8 +6,8 @@ coverage or a verification of the bootstrap confidence level.
 
 import numpy as np
 
-from .bootstrap import _validate_dataset, _valid_category_points
-from .motion import MOTION_TAGS
+from .estimators.bootstrap import _validate_dataset, _valid_category_points
+from .estimators.motion import MOTION_TAGS
 
 
 def require_disjoint_groups(certificate, rows):
@@ -29,12 +29,21 @@ def _ratio(numerator, denominator):
     return float(numerator / denominator) if denominator > 0 else None
 
 
-def _group_selections(category, step, valid, traces, tags, profiles, motion):
+def _group_selections(category, step, valid, traces, tags, profiles, motion, conditioned=False):
     """Assign independent evaluation rows using the frozen grouping rule."""
     if motion:
         for tag in MOTION_TAGS:
             profile = profiles.get((category, tag, step + 1))
-            yield profile, valid[:, step] & (tags == tag), {"motion_tag": tag}
+            selected = valid[:, step] & (tags == tag)
+            if not conditioned or profile is None:
+                yield profile, selected, {"motion_tag": tag}
+                continue
+            assignments = np.searchsorted(profile["uncertainty_cutpoints"], traces[:, step], side="right")
+            for item in profile["bins"]:
+                fallback = not item["usable_for_gate"]
+                yield profile if fallback else item, selected & (assignments == item["uncertainty_bin"]), {
+                    "motion_tag": tag, "uncertainty_bin": item["uncertainty_bin"],
+                    "parent_fallback": fallback}
         return
     profile = profiles.get((category, None, step + 1))
     if profile is None:
@@ -65,7 +74,8 @@ runtime captures and are deliberately not represented by that slice.
         grouping_covariances, dtype=np.float64)
     if grouping.shape != covariances.shape:
         raise ValueError("grouping_covariances must match reported covariance shape.")
-    motion = certificate.document.get("method") == "motion_bootstrap"
+    motion = certificate.document.get("method") in ("motion_bootstrap", "motion_covariance")
+    conditioned = certificate.document.get("method") == "motion_covariance"
     tags = np.asarray(motion_tags, dtype=object) if motion else None
     if motion and (tags.shape != (len(means),) or any(
             tag is not None and tag not in MOTION_TAGS for tag in tags)):
@@ -94,7 +104,7 @@ runtime captures and are deliberately not represented by that slice.
         for step in range(means.shape[1]):
             horizon_ms = round((step + 1) * 1000 / sample_fps)
             for item, selected, identity in _group_selections(
-                    category, step, valid, grouping_traces, category_tags, document_profiles, motion):
+                    category, step, valid, grouping_traces, category_tags, document_profiles, motion, conditioned):
                 count = int(selected.sum())
                 result = {
                     "category": category, "horizon_ms": horizon_ms, **identity,
@@ -165,7 +175,8 @@ runtime captures and are deliberately not represented by that slice.
     return {
         "slice": slice_name,
         "risk_unit": "m2",
-        "grouping": "category_motion_horizon" if motion else "category_horizon_covariance_trace_bin",
+        "grouping": ("category_motion_horizon_covariance_trace_bin" if conditioned else
+                     "category_motion_horizon" if motion else "category_horizon_covariance_trace_bin"),
         "interpretation": "empirical independent-group diagnostics; not individual-error coverage or confidence validation",
         "n_trajectories": len(means), "valid_points": valid_points,
         "certified_points": certified_points,
@@ -182,7 +193,7 @@ runtime captures and are deliberately not represented by that slice.
 
 def wire_covariances(covariances):
     """Reconstruct the covariance transmitted by the production codec."""
-    from intelligent_vehicles.prediction_codec import pack_covariances, decode_covariances
+    from intelligent_vehicles.communication.codec import pack_covariances, decode_covariances
 
     covariances = np.asarray(covariances, dtype=np.float64)
     decoded = np.empty_like(covariances)

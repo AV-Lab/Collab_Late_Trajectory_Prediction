@@ -13,11 +13,11 @@ import time
 import numpy as np
 
 from intelligent_vehicles.vehicles.dataloader import TrajDataloader
-from intelligent_vehicles.detectors.initialize import initialize_detector
-from intelligent_vehicles.trackers.initialize import initialize_tracker
-from intelligent_vehicles.predictors.initialize import initialize_predictor
+from intelligent_vehicles.perception.detectors.initialize import initialize_detector
+from intelligent_vehicles.perception.trackers.initialize import initialize_tracker
+from intelligent_vehicles.perception.predictors.initialize import initialize_predictor
 from intelligent_vehicles.objectstore import initialize_prediction_map
-from calibration.motion import classify_motion
+from calibration.estimators.motion import classify_motion
 from calibration.runtime import Certificate
 
 
@@ -111,7 +111,7 @@ class BasicIV:
             forecast = prediction["prediction"]
             timestamps = sorted(forecast["pred"])
             motion_tag = None
-            if self.certificate.method == "motion_bootstrap_raw_moment":
+            if self.certificate.needs_motion:
                 motion_tag = classify_motion(
                     histories[prediction["id"]],
                     [forecast["pred"][t] for t in timestamps],
